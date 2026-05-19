@@ -7,10 +7,10 @@ from dataclasses import dataclass, field
 import numpy as np
 import openfermion
 from qibo import Circuit, gates
+from qibo.optimizers import optimize
 
 from qibochem.ansatz.hf_reference import hf_circuit
 from qibochem.ansatz.util import generate_excitations, mp2_amplitude, sort_excitations
-from qibo.optimize import optimize
 
 
 def expi_pauli(n_qubits, pauli_string, theta):
@@ -120,6 +120,12 @@ sample_uccsd_param_excitations = {
     "s2": [(1, 3)],
 }
 
+sample_uccsd_param_map = {
+    "d0": [-0.25, 0.25, 0.25, 0.25, -0.25, -0.25, -0.25, 0.25],
+    "s1": [-1.0, 1.0],
+    "s2": [-1.0, 1.0],
+}
+
 """
 Use a UCCAnsatz class instead to create the UCC ansatz circuit and run VQE optimisation
 This class does not use qibo.VQE so that the circuit parameters can be better constrained 
@@ -139,6 +145,7 @@ class UCCAnsatz:
     include_hf: bool = True
     use_mp2_guess: bool = True
     param_excitations: dict = field(init=False)
+    param_map: dict = field(init=False)
 
     def __post_init__(self):
         # Follow the active space definitions from the mol object
@@ -160,9 +167,14 @@ class UCCAnsatz:
         For now use a sample uccsd_param_excitation dictionary to test the workflow
         param_excitaitons format {"s0": [(0, 2), "s1": [(1, 3)....]}
         Each parameter will have a list of excitations that it maps to 
+
+        parm_map is a dictionary that maps each parameter to the coefficients of the 
+        corresponding excitations in the circuit. Used so don't need to reconstruct the
+        circuit every time the parameters are updated during optimisation
         """
 
         self.param_excitations = sample_uccsd_param_excitations
+        self.param_map = sample_uccsd_param_map
         self.param_names = list(self.param_excitations.keys())
 
         # Define initial parameters, if mp2 is false then default to zeros 
@@ -185,7 +197,8 @@ class UCCAnsatz:
         # Important that the final parameters input must match the param_excitations
         # Meaning that finalised parameters can only be used for same ansatz type 
         if self.final_params is not None:
-            self.final_circuit = self._build_circuit(self.final_params)
+            self._set_params(self.final_params)
+            self.final_circuit = self.circuit.copy()
             # Add in a print message here to measure and print final VQE energy with final parameters? 
 
         # Here if you set the final parameters, should be able to call directly 
@@ -196,10 +209,11 @@ class UCCAnsatz:
         if self.include_hf:
             circuit = hf_circuit(self.n_orbs, self.n_elec, ferm_qubit_map=self.ferm_qubit_map)
         else:
-            circuit = qibo.Circuit(self.n_orbs)
+            circuit = Circuit(self.n_orbs)
         # Add on the Gates for every ANSATZ Parameter 
         # All the excitations will be mapped 
         # Param_excitaiton will be constructed based on the ansatz 
+        # Note that the order of construction of circuit should match the order of param_map
         for name in self.param_names:
             theta = param_values[name]
             for excitation in self.param_excitations[name]:
@@ -211,6 +225,19 @@ class UCCAnsatz:
                     ferm_qubit_map=self.ferm_qubit_map,
                 )
         return circuit
+
+    # Get the circuit parameters given parameters in the dictionary form}
+    def _get_circuit_parameters(self, param_values):
+        circuit_params = []
+        for name in self.param_names:
+            theta = param_values[name]
+            for coeff in self.param_map[name]:
+                circuit_params.append(coeff * theta)
+        return circuit_params
+
+    # Update circuit 
+    def _set_params(self, param_values):
+        self.circuit.set_parameters(self._get_circuit_parameters(param_values))
     
     # Convert vector into parameter dictionary 
     def _vector2params(self, theta_vector):
@@ -218,14 +245,12 @@ class UCCAnsatz:
 
     # Function for the optimiser to reconstruct the circuit and get expectation value of the hamiltonian
     def _vector2energy(self, theta_vector):
-        # Here the build_circuit function will reconstruct the circuit 
-        # ucc_circuit handles the mapping of parameters
-        circuit = self._build_circuit(self._vector2params(theta_vector))
+        self._set_params(self._vector2params(theta_vector))
         if self.n_shots is not None:
             # for future implementation??? 
             raise NotImplementedError("Shot-based VQE energy estimation is not implemented yet.")
         # This returns STATEVECTOR expectation value 
-        return np.real(self.hamiltonian.expectation(circuit))
+        return np.real(self.hamiltonian.expectation(self.circuit))
     
     """
     Function to run VQE optimisation
@@ -241,6 +266,8 @@ class UCCAnsatz:
         self.n_shots = n_shots
         # First convert the initial parameters (dictionary) into a vector form for the optimizer
         initial_vector = np.array([self.initial_params[name] for name in self.param_names])
+        # The vector that optimize uses is length equal to number of ANSATZ parameters 
+        # The variable circuit_params contains the FULL CIRCUIT parameters 
         vqe_energy, optimised_vector, extra = optimize(
                                                 self._vector2energy, 
                                                 initial_vector, 
@@ -248,8 +275,9 @@ class UCCAnsatz:
                                                 **optimizer_kwargs)
         # Convert the outut optimised vector back into parameter dictionary form
         self.final_params = self._vector2params(optimised_vector)
-        # Build the final circuit 
-        self.final_circuit = self._build_circuit(self.final_params)
+        # Set the circuit parameters to optimised parameters and build final circuit
+        self._set_params(self.final_params)
+        self.final_circuit = self.circuit.copy()
         self.vqe_energy = vqe_energy
         self.vqe_result = extra
 

@@ -2,6 +2,8 @@
 Circuit representing the Unitary Coupled Cluster ansatz in quantum chemistry
 """
 
+from dataclasses import dataclass, field
+
 import numpy as np
 import openfermion
 from qibo import Circuit, gates
@@ -191,3 +193,97 @@ def ucc_ansatz(
     for excitation, theta in zip(excitations, thetas):
         circuit += ucc_circuit(n_orbs, excitation, theta, trotter_steps=trotter_steps, ferm_qubit_map=ferm_qubit_map)
     return circuit
+
+
+
+sample_uccsd_param_excitations = {
+    "d0": [(0, 1, 2, 3)],
+    "s1": [(0, 2)],
+    "s2": [(1, 3)],
+}
+
+
+@dataclass
+class UCCAnsatz:
+    mol: object
+    ansatz_type: str = "UCCSD"
+    final_params: dict | None = None
+    ferm_qubit_map: str = "jw"
+    trotter_steps: int = 1
+    include_hf: bool = True
+    use_mp2_guess: bool = True
+    param_excitations: dict = field(init=False)
+
+    def __post_init__(self):
+        # Follow the active space definitions from the mol object
+        self.n_elec = (
+            self.mol.nelec
+            if self.mol.n_active_e is None
+            else self.mol.n_active_e
+        )
+
+        self.n_orbs = (
+            self.mol.nso
+            if self.mol.n_active_orbs is None
+            else self.mol.n_active_orbs
+        )
+        """
+        Here the param_excitations is a unique dictionary that maps to each ansatz 
+        A function _ansatz2param_excitations will be defined to generate these 
+        Every new ansatz just needs to define the new rules 
+        For now use a sample uccsd_param_excitation dictionary to test the workflow
+        param_excitaitons format {"s0": [(0, 2), "s1": [(1, 3)....]}
+        Each parameter will have a list of excitations that it maps to 
+        """
+
+        self.param_excitations = sample_uccsd_param_excitations
+        self.param_names = list(self.param_excitations.keys())
+
+        # Define initial parameters, if mp2 is false then default to zeros 
+        # Here the parameters are stored as a dictionary {s0: 0.3, s1: 0.2...}
+        if self.use_mp2_guess:
+            self.initial_params = {
+                name: mp2_amplitude(excitations[0], self.mol.eps, self.mol.tei)
+                for name, excitations in self.param_excitations.items()
+            }
+        else:
+            self.initial_params = {name: 0.0 for name in self.param_names}
+
+        # Build the initial circuit with initial parameters
+        # After optimisation, then final parameters will be set and final_circuit will be built 
+        self.circuit = self._build_circuit(self.initial_params)
+        self.final_circuit = None
+
+        # Here, if the final params is already set, then final_circuit will be built 
+        # If input final_params, ansatz object will treat it as optimised coefficients 
+        # Important that the final parameters input must match the param_excitations
+        # Meaning that finalised parameters can only be used for same ansatz type 
+        if self.final_params is not None:
+            self.final_circuit = self._build_circuit(self.final_params)
+            # Add in a print message here to measure and print final VQE energy with final parameters? 
+
+        # Here if you set the final parameters, should be able to call directly 
+        # VQE_circuit = UCC_Ansatz.final_circuit --> Pass this circuit into QSE / others 
+
+    def _build_circuit(self, param_values):
+        # Default should be true to include the HF state 
+        if self.include_hf:
+            circuit = hf_circuit(self.n_orbs, self.n_elec, ferm_qubit_map=self.ferm_qubit_map)
+        else:
+            circuit = qibo.Circuit(self.n_orbs)
+        # Add on the Gates for every ANSATZ Parameter 
+        # All the excitations will be mapped 
+        # Param_excitaiton will be constructed based on the ansatz 
+        for name in self.param_names:
+            theta = param_values[name]
+            for excitation in self.param_excitations[name]:
+                circuit += ucc_circuit(
+                    self.n_orbs,
+                    excitation,
+                    theta=theta,
+                    trotter_steps=self.trotter_steps,
+                    ferm_qubit_map=self.ferm_qubit_map,
+                )
+        return circuit
+    
+    

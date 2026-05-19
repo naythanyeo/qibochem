@@ -112,13 +112,6 @@ def ucc_circuit(n_qubits, excitation, theta=0.0, trotter_steps=1, ferm_qubit_map
             circuit += _circuit
     return circuit
 
-
-sample_uccsd_param_map = {
-    "d0": [-0.25, 0.25, 0.25, 0.25, -0.25, -0.25, -0.25, 0.25],
-    "s1": [-1.0, 1.0],
-    "s2": [-1.0, 1.0],
-}
-
 """
 Use a UCCAnsatz class instead to create the UCC ansatz circuit and run VQE optimisation
 This class does not use qibo.VQE so that the circuit parameters can be better constrained 
@@ -138,6 +131,7 @@ class UCCAnsatz:
     include_hf: bool = True
     use_mp2_guess: bool = True
     param_excitations: dict = field(init=False)
+    # Maybe modify in the future to allow users to add in own excitation parameters
     param_map: dict = field(init=False)
 
     def __post_init__(self):
@@ -155,15 +149,9 @@ class UCCAnsatz:
         )
         """
         Here the param_excitations is a unique dictionary that maps to each ansatz 
-        A function _ansatz2param_excitations will be defined to generate these 
-        Every new ansatz just needs to define the new rules 
-        For now use a sample uccsd_param_excitation dictionary to test the workflow
         param_excitaitons format {"s0": [(0, 2), "s1": [(1, 3)....]}
-        Each parameter will have a list of excitations that it maps to 
-
         parm_map is a dictionary that maps each parameter to the coefficients of the 
-        corresponding excitations in the circuit. Used so don't need to reconstruct the
-        circuit every time the parameters are updated during optimisation
+        corresponding excitations in the circuit.
         """
 
         self.param_excitations = ansatz2param_excitations(ansatz_name=self.ansatz_type, n_elec=self.n_elec, n_orbs=self.n_orbs)
@@ -191,8 +179,8 @@ class UCCAnsatz:
         # Meaning that finalised parameters can only be used for same ansatz type 
         if self.final_params is not None:
             self._set_params(self.final_params)
-            self.final_circuit = self.circuit.copy()
-            # Add in a print message here to measure and print final VQE energy with final parameters? 
+            self.final_circuit = self.circuit.copy(deep=True)
+            # Deep=True to separate the gates
 
         # Here if you set the final parameters, should be able to call directly 
         # VQE_circuit = UCC_Ansatz.final_circuit --> Pass this circuit into QSE / others 

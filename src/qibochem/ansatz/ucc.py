@@ -167,7 +167,7 @@ class UCCAnsatz:
         """
 
         self.param_excitations = ansatz2param_excitations(ansatz_name=self.ansatz_type, n_elec=self.n_elec, n_orbs=self.n_orbs)
-        self.param_map = sample_uccsd_param_map
+        self.param_map = self._get_param_map()
         self.param_names = list(self.param_excitations.keys())
 
         # Define initial parameters, if mp2 is false then default to zeros 
@@ -219,6 +219,36 @@ class UCCAnsatz:
                     ferm_qubit_map=self.ferm_qubit_map,
                 )
         return circuit
+
+    # Function to map the param_excitations into the corresponding CIRCUIT parameters
+    # Follows largely the ucc_circuit construction but removes unnecesary parts 
+    def _get_param_map(self):
+        param_map = {}
+
+        for name, excitations in self.param_excitations.items():
+            param_map[name] = []
+
+            for excitation in excitations:
+                n_orbitals = len(excitation)
+                sorted_orbitals = sorted(excitation, reverse=True)
+                # Create the anti hermitian operator string 
+                fermion_op_str_template = f"{(n_orbitals // 2) * '{}^ '}{(n_orbitals // 2) * '{} '}"
+                fermion_operator_str = fermion_op_str_template.format(*sorted_orbitals)
+                fermion_operator = openfermion.FermionOperator(fermion_operator_str)
+                ucc_operator = fermion_operator - openfermion.hermitian_conjugated(fermion_operator)
+                if self.ferm_qubit_map == "jw":
+                    qubit_ucc_operator = openfermion.jordan_wigner(ucc_operator)
+                elif self.ferm_qubit_map == "bk":
+                    qubit_ucc_operator = openfermion.bravyi_kitaev(ucc_operator)
+                else:
+                    raise KeyError("Fermon-to-qubit mapping must be either 'jw' or 'bk'")
+                # Double check this for other trotter steps ?? 
+                for _ in range(self.trotter_steps):
+                    for raw_pauli_string in qubit_ucc_operator.get_operators():
+                        ((_pauli_ops, coeff),) = raw_pauli_string.terms.items()
+                        gate_coeff = np.real(-2.0 * (-1.0j * coeff) / self.trotter_steps)
+                        param_map[name].append(gate_coeff)
+        return param_map
 
     # Get the circuit parameters given parameters in the dictionary form}
     def _get_circuit_parameters(self, param_values):

@@ -10,6 +10,7 @@ from qibo import Circuit, gates
 
 from qibochem.ansatz.hf_reference import hf_circuit
 from qibochem.ansatz.util import generate_excitations, mp2_amplitude, sort_excitations
+from qibo.optimize import optimize
 
 
 def expi_pauli(n_qubits, pauli_string, theta):
@@ -112,89 +113,6 @@ def ucc_circuit(n_qubits, excitation, theta=0.0, trotter_steps=1, ferm_qubit_map
     return circuit
 
 
-def ucc_ansatz(
-    molecule,
-    excitation_level=None,
-    excitations=None,
-    thetas=None,
-    trotter_steps=1,
-    ferm_qubit_map=None,
-    include_hf=True,
-    use_mp2_guess=True,
-):
-    r"""
-    Convenience function for buildng a circuit corresponding to the UCC ansatz with multiple excitations for a
-    given :class:`qibochem.driver.Molecule`. If no excitations are given, it defaults to returning the full UCCSD
-    circuit ansatz.
-
-    Args:
-        molecule (:class:`qibochem.driver.Molecule`): The molecule of interest.
-        excitation_level (str): Include excitations up to how many electrons, i.e. ``"S"`` or ``"D"``.
-            Ignored if ``excitations`` argument is given. Default: ``"D"``, i.e. double excitations
-        excitations (list): List of excitations (e.g. ``[[0, 1, 2, 3], [0, 1, 4, 5]]``) used to build the
-            UCC circuit. Overrides the ``excitation_level`` argument
-        thetas (list): Parameters for the excitations. Default value depends on the ``use_mp2_guess`` argument.
-        trotter_steps (int): Number of Trotter steps; i.e. number of times the UCC ansatz is applied with
-            :math:`\theta = \theta` / ``trotter_steps``. Default: 1
-        ferm_qubit_map (str): fermion-to-qubit transformation. Default: Jordan-Wigner (``"jw"``)
-        include_hf (bool): Whether or not to start the circuit with a Hartree-Fock circuit. Default: ``True``
-        use_mp2_guess (bool): Whether to use MP2 amplitudes or a numpy zero array as the initial guess parameter.
-            Default: ``True``, will use the MP2 amplitudes as the initial guess parameters
-
-    Returns:
-        :class:`qibo.models.circuit.Circuit`: Circuit corresponding to an UCC ansatz
-    """
-    # Get the number of electrons and spin-orbitals from the molecule argument
-    n_elec = molecule.nelec if molecule.n_active_e is None else molecule.n_active_e
-    n_orbs = molecule.nso if molecule.n_active_orbs is None else molecule.n_active_orbs
-
-    # Define the excitation level to be used if no excitations given
-    if excitations is None:
-        excitation_levels = ("S", "D", "T", "Q")
-        if excitation_level is None:
-            excitation_level = "D"
-        else:
-            # Check validity of input
-            assert (
-                len(excitation_level) == 1 and excitation_level.upper() in excitation_levels
-            ), "Unknown input for excitation_level"
-            # Note: Probably don't be too ambitious and try to do 'T'/'Q' at the moment...
-            if excitation_level.upper() in ("T", "Q"):
-                raise NotImplementedError("Cannot handle triple and quadruple excitations!")
-        # Get the (largest) order of excitation to use
-        excitation_order = excitation_levels.index(excitation_level.upper()) + 1
-
-        # Generate and sort all the possible excitations
-        excitations = []
-        for order in range(excitation_order, 0, -1):  # Reversed to get higher excitations first
-            excitations += sort_excitations(generate_excitations(order, range(0, n_elec), range(n_elec, n_orbs)))
-    else:
-        # Some checks to ensure the given excitations are valid
-        assert all(len(_ex) % 2 == 0 for _ex in excitations), "Excitation with an odd number of elements found!"
-
-    # Check if thetas argument given, define to be all zeros if not
-    # Number of thetas here should match the number of excitations when circuit is initialised
-    # Number of parameters previously correspond to the otal circuit parameters 
-    # that are updated and set with VQE object not when its initialised
-    if thetas is None:
-        if use_mp2_guess:
-            thetas = np.array([mp2_amplitude(excitation, molecule.eps, molecule.tei) for excitation in excitations])
-        else:
-            thetas = np.zeros(len(excitations))
-    else:
-        # Check that number of circuit variables (i.e. thetas) matches the number of circuit parameters
-        assert len(thetas) == len(excitations), "Number of input parameters doesn't match the number of circuit parameters!"
-
-    # Build the circuit
-    if include_hf:
-        circuit = hf_circuit(n_orbs, n_elec, ferm_qubit_map=ferm_qubit_map)
-    else:
-        circuit = Circuit(n_orbs)
-    for excitation, theta in zip(excitations, thetas):
-        circuit += ucc_circuit(n_orbs, excitation, theta, trotter_steps=trotter_steps, ferm_qubit_map=ferm_qubit_map)
-    return circuit
-
-
 
 sample_uccsd_param_excitations = {
     "d0": [(0, 1, 2, 3)],
@@ -202,6 +120,14 @@ sample_uccsd_param_excitations = {
     "s2": [(1, 3)],
 }
 
+"""
+Use a UCCAnsatz class instead to create the UCC ansatz circuit and run VQE optimisation
+This class does not use qibo.VQE so that the circuit parameters can be better constrained 
+More overhead expected compared to just optimising the circuit parameters but important 
+for accurate ansatz construction. 
+The class uses ucc_circuit and above helper functions to build and optimise VQE circuit
+Ansatz construction is more easily done here also by defining param_excitations
+"""
 
 @dataclass
 class UCCAnsatz:
@@ -285,5 +211,48 @@ class UCCAnsatz:
                     ferm_qubit_map=self.ferm_qubit_map,
                 )
         return circuit
+    
+    # Convert vector into parameter dictionary 
+    def _vector2params(self, theta_vector):
+        return {name: theta for name, theta in zip(self.param_names, theta_vector)}
+
+    # Function for the optimiser to reconstruct the circuit and get expectation value of the hamiltonian
+    def _vector2energy(self, theta_vector):
+        # Here the build_circuit function will reconstruct the circuit 
+        # ucc_circuit handles the mapping of parameters
+        circuit = self._build_circuit(self._vector2params(theta_vector))
+        if self.n_shots is not None:
+            # for future implementation??? 
+            raise NotImplementedError("Shot-based VQE energy estimation is not implemented yet.")
+        # This returns STATEVECTOR expectation value 
+        return np.real(self.hamiltonian.expectation(circuit))
+    
+    """
+    Function to run VQE optimisation
+    Build on top of qibo.optimize function
+    Finds the optimal parameters and constructs the final circuit
+    Prints the final VQE energy
+    VQE_parameters can be accessed through ansatz.final_params
+    Final circuit for future calculatiosn can be accessed through ansatz.final_circuit
+    """
+
+    def run_vqe(self, method="BFGS", n_shots=None, **optimizer_kwargs):
+        self.hamiltonian = self.mol.hamiltonian("sym", ferm_qubit_map=self.ferm_qubit_map)
+        self.n_shots = n_shots
+        # First convert the initial parameters (dictionary) into a vector form for the optimizer
+        initial_vector = np.array([self.initial_params[name] for name in self.param_names])
+        vqe_energy, optimised_vector, extra = optimize(
+                                                self._vector2energy, 
+                                                initial_vector, 
+                                                method=method, 
+                                                **optimizer_kwargs)
+        # Convert the outut optimised vector back into parameter dictionary form
+        self.final_params = self._vector2params(optimised_vector)
+        # Build the final circuit 
+        self.final_circuit = self._build_circuit(self.final_params)
+        self.vqe_energy = vqe_energy
+        self.vqe_result = extra
+
+        return vqe_energy, self.final_params, extra
     
     

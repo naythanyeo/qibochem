@@ -10,7 +10,7 @@ from qibo import Circuit, gates
 from qibo.optimizers import optimize
 
 from qibochem.ansatz.hf_reference import hf_circuit
-from qibochem.ansatz.util import generate_excitations, mp2_amplitude, sort_excitations
+from qibochem.ansatz.util import generate_excitations, mp2_amplitude, sort_excitations, ansatz2param_excitations
 
 
 def expi_pauli(n_qubits, pauli_string, theta):
@@ -113,13 +113,6 @@ def ucc_circuit(n_qubits, excitation, theta=0.0, trotter_steps=1, ferm_qubit_map
     return circuit
 
 
-
-sample_uccsd_param_excitations = {
-    "d0": [(0, 1, 2, 3)],
-    "s1": [(0, 2)],
-    "s2": [(1, 3)],
-}
-
 sample_uccsd_param_map = {
     "d0": [-0.25, 0.25, 0.25, 0.25, -0.25, -0.25, -0.25, 0.25],
     "s1": [-1.0, 1.0],
@@ -173,7 +166,7 @@ class UCCAnsatz:
         circuit every time the parameters are updated during optimisation
         """
 
-        self.param_excitations = sample_uccsd_param_excitations
+        self.param_excitations = ansatz2param_excitations(ansatz_name=self.ansatz_type, n_elec=self.n_elec, n_orbs=self.n_orbs)
         self.param_map = sample_uccsd_param_map
         self.param_names = list(self.param_excitations.keys())
 
@@ -204,6 +197,7 @@ class UCCAnsatz:
         # Here if you set the final parameters, should be able to call directly 
         # VQE_circuit = UCC_Ansatz.final_circuit --> Pass this circuit into QSE / others 
 
+    
     def _build_circuit(self, param_values):
         # Default should be true to include the HF state 
         if self.include_hf:

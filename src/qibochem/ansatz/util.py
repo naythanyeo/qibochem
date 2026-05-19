@@ -152,3 +152,80 @@ def sort_excitations(excitations):
             prev = copy_excitations.pop(0)
             result.append(prev)
     return result
+
+
+# UCCSD Excitation Generator
+def generate_UCCSD_excitations(n_elec, n_orbs):
+    param_excitations = {}  
+
+    double_excitations = sort_excitations(
+        generate_excitations(2, range(n_elec), range(n_elec, n_orbs))
+    )
+    single_excitations = sort_excitations(
+        generate_excitations(1, range(n_elec), range(n_elec, n_orbs))
+    )
+
+    for index, excitation in enumerate(double_excitations):
+        param_excitations[f"d{index}"] = [tuple(excitation)]
+    for index, excitation in enumerate(single_excitations):
+        param_excitations[f"s{index}"] = [tuple(excitation)]
+
+    return param_excitations
+
+# UCCSD Singlet Excitation Generator
+def generate_UCCSDSinglet_excitations(n_elec, n_orbs):
+    param_excitations = {}
+
+    double_excitations = sort_excitations(
+        generate_excitations(2, range(n_elec), range(n_elec, n_orbs))
+    )
+    single_excitations = sort_excitations(
+        generate_excitations(1, range(n_elec), range(n_elec, n_orbs))
+    )
+
+    def _spin2spatial(spin_orbitals):
+        return tuple(orb // 2 for orb in spin_orbitals)
+    
+    # For singles excitations, group all the same term together 
+    singlet_pairs = {}
+    for excitation in single_excitations:
+        spatial_pair = _spin2spatial(excitation)
+        if spatial_pair not in singlet_pairs:
+            singlet_pairs[spatial_pair] = []
+        singlet_pairs[spatial_pair].append(tuple(excitation))
+
+    # KIV function, might modify generate_excitaions 
+    # For UCCSDSinglet current the spin orbital grouping cannot be straight forwardly implemented 
+    # Generate_excitations outputs 0, 3, 5, 6 but not 0, 3, 6, 5 for example 
+    # Here to preserve spin 0>6, 3>5 which will be different from say 1, 2, 5, 6 which is 1>5 2>6
+    # KIV relook to modify generate_excitations so that the output has all combinations 
+    # But also preserve spin in the same excitation order for doubles 
+    singlet_doubles = {}
+    for excitation in double_excitations:
+        excitation = tuple(excitation)
+        direct_pairs = [(excitation[0], excitation[2]), (excitation[1], excitation[3])]
+        cross_pairs = [(excitation[0], excitation[3]), (excitation[1], excitation[2])]
+
+        if all(pair in singlet_pairs.get(_spin2spatial(pair), []) for pair in direct_pairs):
+            spatial_pair = tuple(sorted(_spin2spatial(pair) for pair in direct_pairs))
+        else:
+            spatial_pair = tuple(sorted(_spin2spatial(pair) for pair in cross_pairs))
+
+        if spatial_pair not in singlet_doubles:
+            singlet_doubles[spatial_pair] = []
+        singlet_doubles[spatial_pair].append(excitation)
+
+    for index, excitations in enumerate(singlet_doubles.values()):
+        param_excitations[f"sd{index}"] = excitations
+    for index, excitations in enumerate(singlet_pairs.values()):
+        param_excitations[f"ss{index}"] = excitations
+
+    return param_excitations
+
+
+def ansatz2param_excitations(ansatz_name, n_elec, n_orbs):
+        if ansatz_name.upper() == "UCCSD":
+            return generate_UCCSD_excitations(n_elec, n_orbs)
+        elif ansatz_name.upper() == "UCCSDSINGLET":
+            return generate_UCCSDSinglet_excitations(n_elec, n_orbs)
+        raise ValueError(f"Unknown ansatz_type: {ansatz_name}")

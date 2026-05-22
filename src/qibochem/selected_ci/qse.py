@@ -5,10 +5,7 @@ from __future__ import annotations
 import numpy as np
 import openfermion
 
-from qibochem.driver.hamiltonian import (
-    _qubit_hamiltonian,
-    _qubit_to_symbolic_hamiltonian,
-)
+from qibochem.driver.hamiltonian import _qubit_hamiltonian, _qubit_to_symbolic_hamiltonian
 from qibochem.selected_ci.utils import assemble_matrix
 
 """
@@ -17,22 +14,51 @@ Here we define a few QSE Excitation Operator Generators
 These generators take in a mol object and return a list of excitation operators 
 Mol object is input because sometimes number of electrons will be used for some generators 
 """
-
 def generate_general_singles(mol) -> list[openfermion.FermionOperator]:
-        """Generate one-body excitation operators + the identity."""
-        n_active_orbs = mol.n_active_orbs if mol.n_active_orbs is not None else mol.nso
-        operators = [
-            openfermion.FermionOperator(f"{2*_i}^ {2*_j}") + openfermion.FermionOperator(f"{2*_i+1}^ {2*_j+1}")
+    """Generate all spin-orbital one-body operators a_p^ a_q.
+    Here general singles contains unrestricted excitations"""
+    n_spin_orbs = mol.n_active_orbs if mol.n_active_orbs is not None else mol.nso
+    operators = [openfermion.FermionOperator(f"{_i}^ {_j}")
+                 for _i in range(n_spin_orbs)
+                 for _j in range(n_spin_orbs)]
+    return operators
+
+def generate_singlet_singles(mol) -> list[openfermion.FermionOperator]:
+    """Generate spin-adapt one-body operators
+    Loops through spatial orbitals instead to pair the terms
+    INCLUDES the number operator here"""
+    n_active_orbs = mol.n_active_orbs if mol.n_active_orbs is not None else mol.nso
+    operators = [openfermion.FermionOperator(f"{2*_i}^ {2*_j}") + openfermion.FermionOperator(f"{2*_i+1}^ {2*_j+1}")
             for _i in range(n_active_orbs // 2)
-            for _j in range(n_active_orbs // 2)
-        ]
-        # operators = [openfermion.FermionOperator("")]
-        # for i in range(nso):
-        #     for j in range(nso):
-        #         if self.config.conserve_spin and (i % 2) != (j % 2):
-        #             continue
-        #         operators.append(openfermion.FermionOperator(f"{i}^ {j}"))
-        return operators
+            for _j in range(n_active_orbs // 2)]
+    return operators
+
+def generate_triplet_singles(mol, ms=0) -> list[openfermion.FermionOperator]:
+    """Generate one-body triplet excitation operators for a chosen spin projection.
+    Similar to singlet singles, but the triplets sign is reversed for m=0
+    For m=+-1, the excitations dont need to be paired"""
+    if ms not in (0, 1, -1, "all"):
+        raise ValueError("ms must be 0, 1, -1, or 'all'.")
+
+    n_active_orbs = mol.n_active_orbs if mol.n_active_orbs is not None else mol.nso
+    n_spatial_orbs = n_active_orbs // 2
+
+    def triplet_operator(_i, _j, _ms):
+        if _ms == 0: # m=0 case, flip the sign of operator pairs
+            return (openfermion.FermionOperator(f"{2 * _i}^ {2 * _j}") - 
+                    openfermion.FermionOperator(f"{2 * _i + 1}^ {2 * _j + 1}")) / np.sqrt(2.0)
+        # The case for m not 0 
+        return openfermion.FermionOperator(f"{2 * _i + int(_ms < 0)}^ {2 * _j + int(_ms > 0)}")
+
+    if ms == "all":
+        return [triplet_operator(_i, _j, _ms)
+                for _i in range(n_spatial_orbs)
+                for _j in range(n_spatial_orbs)
+                for _ms in (0, 1, -1)]
+
+    return [triplet_operator(_i, _j, ms)
+            for _i in range(n_spatial_orbs)
+            for _j in range(n_spatial_orbs)]
 
 
 """

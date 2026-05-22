@@ -163,23 +163,43 @@ class ShotProtocol:
         return results["observable"] # Output one expectation value if input is a single observable 
 
 
-# Future AdaptiveMatrixShotProtocol:
-#
-# 1. Initial rough measurement
-# 2. Assemble H and S matrices
-# 3. Solve generalized eigenproblem
-# 4. Determine important matrix elements
-# 5. Allocate more shots to important observables
-# 6. Re-measure selected observables
-#
-# This future protocol should build on top of ShotProtocol.
+"""TBC IMPLEMENTATION of Adaptive SHOTS"""
 
 
-# Future global batching:
-#
-# observables
-# -> extract global Pauli terms
-# -> deduplicate terms
-# -> build global commuting groups
-# -> execute shared measurement circuits
-# -> reconstruct all observables from cached Pauli expectations
+@dataclass
+class AdaptiveShots:
+    total_shots: int
+    initial_shots: int
+    max_iterations: int = 3
+    min_shots_per_observable: int = 100
+    grouping: str = "qwc"
+    shot_allocation_mode: str = "coefficients"
+
+    def evaluate(self, circuit, observables):
+        """
+        AdaptiveShots first spends initial_shots to measure all QSE projected observables roughly 
+        using the normal ShotProtocol; 
+        the measured expectation-value dictionary is assembled into approximate H and S matrices, 
+        which are then solved through the generalized eigenvalue problem to estimate the current 
+        QSE states. 
+        From the resulting eigenvectors/eigenvalues, the protocol assigns importance weights to 
+        each H_ij and S_ij observable, reallocates the remaining shot budget toward the most 
+        important matrix elements, measures those observables again through ShotProtocol, 
+        combines old and new estimates by shot-weighted averaging, and repeats this 
+        assemble-solve-reallocate-measure cycle until max_iterations or the shot budget is exhausted.
+        The final output is still a dictionary mapping each observable key to its final expectation 
+        value.
+        """
+        pass
+
+
+"""FOR FUTURE 
+Implement bootstrap shots protocol also 
+output a list of sampled shots 
+basically every observable will be calculated many times based on total sampling shots
+We provided also a minimum shot sample, default can be 1/100 of the total sampling shots
+Eg 100K total sampling shots, then minimum 1k shots, so this will calll our other shots protocol
+with 1k shtos at the start, then repeat 100 times 
+So that the 100 samples will all be stored 
+Then later can call utils functions to extract all of the data from there 
+So that sampling shots experiments can run much faster"""

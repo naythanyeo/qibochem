@@ -103,7 +103,7 @@ class QSE_Computable:
         # calling mol.spin_projection("f") or mol.spin_squared("f") etc 
         # Depending on observable calss, might have more functions to call this projection also
 
-    def run_qse(self, circuit, protocol) -> tuple(np.ndarray, np.ndarray):
+    def run_qse(self, circuit, protocol) -> tuple[np.ndarray, np.ndarray]:
         """
         Run the QSE protocol using the given circuit.
 

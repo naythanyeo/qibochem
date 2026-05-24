@@ -264,6 +264,11 @@ class UCCAnsatz:
         # This returns STATEVECTOR expectation value 
         return np.real(self.hamiltonian.expectation(self.circuit))
     
+
+    """TODO
+    CONVERT THIS INTO ONE FUNCTION. INCLUDE PROTOCOLS HERE
+    """
+    
     """
     Function to run VQE optimisation
     Build on top of qibo.optimize function

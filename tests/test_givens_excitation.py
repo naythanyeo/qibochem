@@ -13,7 +13,7 @@ from qibochem.ansatz.givens_excitation import (
     givens_excitation_circuit,
     single_excitation_gate,
 )
-from qibochem.ansatz.util import generate_excitations, mp2_amplitude, sort_excitations
+from qibochem.ansatz.excitation_util import generate_excitations, mp2_amplitude, sort_excitations
 from qibochem.driver import Molecule
 
 

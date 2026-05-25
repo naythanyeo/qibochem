@@ -12,7 +12,7 @@ from qibo.hamiltonians import SymbolicHamiltonian
 from qibochem.ansatz import hf_circuit
 from qibochem.ansatz.qeb import qeb_circuit
 from qibochem.ansatz.ucc import expi_pauli, ucc_ansatz, ucc_circuit
-from qibochem.ansatz.util import generate_excitations, mp2_amplitude, sort_excitations
+from qibochem.ansatz.excitation_util import generate_excitations, mp2_amplitude, sort_excitations
 from qibochem.driver import Molecule
 
 

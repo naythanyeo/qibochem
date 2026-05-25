@@ -5,7 +5,7 @@ Tests for ansatz utility functions (util.py)
 import numpy as np
 import pytest
 
-from qibochem.ansatz.util import generate_excitations, mp2_amplitude, sort_excitations
+from qibochem.ansatz.excitation_util import generate_excitations, mp2_amplitude, sort_excitations
 from qibochem.driver import Molecule
 
 

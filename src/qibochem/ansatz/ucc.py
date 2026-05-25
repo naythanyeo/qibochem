@@ -10,7 +10,7 @@ from qibo import Circuit, gates
 from qibo.optimizers import optimize
 
 from qibochem.ansatz.hf_reference import hf_circuit
-from qibochem.ansatz.util import generate_excitations, mp2_amplitude, sort_excitations, ansatz2param_excitations
+from qibochem.ansatz.excitation_util import generate_excitations, mp2_amplitude, sort_excitations, ansatz2param_excitations
 
 
 def expi_pauli(n_qubits, pauli_string, theta):
@@ -124,7 +124,6 @@ Ansatz construction is more easily done here also by defining param_excitations
 @dataclass
 class UCCAnsatz:
     mol: object
-    ansatz_type: str = "UCCSD"
     final_params: dict | None = None
     ferm_qubit_map: str = "jw"
     trotter_steps: int = 1
@@ -154,7 +153,7 @@ class UCCAnsatz:
         corresponding excitations in the circuit.
         """
 
-        self.param_excitations = ansatz2param_excitations(ansatz_name=self.ansatz_type, n_elec=self.n_elec, n_orbs=self.n_orbs)
+        self.param_excitations = self.excitations()
         self.param_map = self._get_param_map()
         self.param_names = list(self.param_excitations.keys())
 
@@ -185,7 +184,11 @@ class UCCAnsatz:
         # Here if you set the final parameters, should be able to call directly 
         # VQE_circuit = UCC_Ansatz.final_circuit --> Pass this circuit into QSE / others 
 
-    
+    def excitations(self):
+        raise NotImplementedError(
+            "Cannot call UCCAnsatz directly. Use a concrete ansatz class such as UCCSD, UCCGSD, or UCCSDSinglet."
+        )
+
     def _build_circuit(self, param_values):
         # Default should be true to include the HF state 
         if self.include_hf:
@@ -300,4 +303,11 @@ class UCCAnsatz:
 
         return vqe_energy, self.final_params, extra
     
-    
+"""
+GENERAL STRUCTURE FOR UCC ANSATZ
+Will call helper functinos from utils 
+"""
+from excitation_util import generate_excitations, filter_OV_transition, filter_spin, filter_paired, group_excitations
+class UCCSD(UCCAnsatz):
+    def excitations(self):
+        pass

@@ -42,118 +42,122 @@ def mp2_amplitude(excitation, orbital_energies, tei):
     return numerator / denominator
 
 
-def generate_excitations(order, excite_from, excite_to, conserve_spin=True):
-    """
-    Generate all possible excitations between a list of occupied and virtual orbitals
-
-    Args:
-        order: Order of excitations, i.e. 1 == single, 2 == double
-        excite_from: Iterable of integers
-        excite_to: Iterable of integers
-        conserve_spin: ensure that the total electronic spin is conserved
-
-    Return:
-        List of lists, e.g. [[0, 1]]
-    """
-    # If order of excitation > either number of electrons/orbitals, return list of empty list
-    if order > min(len(excite_from), len(excite_to)):
-        return [[]]
-
-    # Generate all possible excitations first
-    from itertools import combinations  # pylint: disable=C0415
-
-    all_excitations = [
-        [*_from, *_to] for _from in combinations(excite_from, order) for _to in combinations(excite_to, order)
-    ]
-    # Filter out the excitations if conserve_spin set
-    if conserve_spin:
-        # Not sure if this filtering is exhaustive; might not remove some redundant excitations?
-        all_excitations = [
-            _ex
-            for _ex in all_excitations
-            if sum(_ex) % 2 == 0 and (sum(_i % 2 for _i in _ex[:order]) == sum(_i % 2 for _i in _ex[order:]))
-        ]
-    return all_excitations
-
-
 def sort_excitations(excitations):
     """
-    Sorts a list of excitations according to some common-sense and empirical rules (see below).
-        The order of the excitations must be the same throughout.
+    *NEW SORTING METHOD NEEDED* 
+    Likely sort without chemistry, just solely by getting index position in n^2 / n^4 subspace (singles / doubles)
+    Sorting here is only for engeineering reproducability --> End goal is for the coefficient labels to be constant 
+    i.e. we just need a consistent mapping from excitation to ansatz label 
 
-    Sorting order:
-    1. (For double excitations only) All paired excitations between the same MOs first
-    2. Pair up excitations between the same MOs, e.g. (0, 2) and (1, 3)
-    3. Then count upwards from smallest MO
-
-    Args:
-        excitations: List of iterables, each representing an excitation; e.g. [[1, 5], [0, 4]]
-
-    Returns:
-        List of excitations after sorting
+    Briefly 
+    label: {rank}{generalised}{singlet_adapt}{paired}{index}_k{k_index}
+    eg. for UCCGSDSinglet --> it is generalised and singlet adapt, but not paired, so coefficients will be
+    SGS0, SGS1 ... DGS0, DGS1 ... (for singles and doubles)
+    for k-up each circuit layer has the k0 then k1 then k2 (for total 3 paired circuits)
     """
-    # Check that all excitations are of the same order and <= 2
-    order = len(excitations[0]) // 2
-    if order > 2:
-        raise NotImplementedError("Can only handle single and double excitations!")
-    assert all(len(_ex) // 2 == order for _ex in excitations), "Cannot handle excitations of different orders!"
+    pass
 
-    # Define variables for the while loop
-    copy_excitations = [list(_ex) for _ex in excitations]
-    result = []
-    prev = []
+"""
+NEW EXCITATION GENERATION FUNCTIONS 
+These set of excitation generators enumerate all possibilities so it is easier to build generalised ansatz too 
+First layer generates ALL excitations 
+Subsequent defines filter and grouping functions that can be used to restrict ansatz 
+In general an Ansatz will then be constructed from a combination of these functions 
+"""
 
-    # No idea how I came up with this, but it seems to work for double excitations
-    def sorting_fn(x):
-        # Default sorting is OK for single excitations
-        return sum((order + 1 - _i) * abs(x[2 * _i + 1] // 2 - x[2 * _i] // 2) for _i in range(0, order))
+# Generate All Excitations
+from itertools import product, combinations
 
-    # Make a copy of the list of excitations, and use it populate a new list iteratively
-    while copy_excitations:
-        if not prev:
-            # Take out all pair excitations first
-            pair_excitations = [
-                _ex
-                for _ex in copy_excitations
-                # Indices of the electrons/holes must be consecutive numbers
-                if sum(abs(_ex[2 * _i + 1] // 2 - _ex[2 * _i] // 2) for _i in range(0, order)) == 0
-            ]
-            while pair_excitations:
-                pair_excitations = sorted(pair_excitations)
-                ex_to_remove = pair_excitations.pop(0)
-                if ex_to_remove in copy_excitations:
-                    # 'Move' the first pair excitation from copy_excitations to result
-                    index = copy_excitations.index(ex_to_remove)
-                    result.append(copy_excitations.pop(index))
+def generate_excitations(rank, n_orb): 
+    """
+    Function to generate ALL possible excitations for a particular rank
+    First groups them by sets with combinations to prevent overlap 
+    Then find all possible excitations, including O->V, O->O, V->V, V->O
+    Outputs: 
+    Singles: ((1,), (2,)), ((1,), (3,))... 
+    Doubles: ((1, 2), (3, 4)), ((1, 2), (3, 5)) ... 
+    Generally: ((Excite from Sets), (Excite to Sets))
+    """
+    n_spin_orb = 2*n_orb
+    index_sets = list(combinations(range(n_spin_orb), r=rank))
+    excitations = list(product(index_sets, repeat = 2))
+    return excitations
 
-            # No more pair excitations, only remaining excitations should have >=3 MOs involved
-            # Sort the remaining excitations
-            copy_excitations = sorted(copy_excitations, key=sorting_fn if order != 1 else None)
-        else:
-            # Check to see for excitations involving the same MOs as prev
-            _from = prev[:order]
-            _to = prev[order:]
-            # Get all possible excitations involving the same MOs
-            new_from = [_i + 1 if _i % 2 == 0 else _i - 1 for _i in _from]
-            new_to = [_i + 1 if _i % 2 == 0 else _i - 1 for _i in _to]
-            same_mo_ex = [sorted(list(_f) + list(_t)) for _f in (_from, new_from) for _t in (_to, new_to)]
-            # Remove the excitations with the same MOs from copy_excitations
-            while same_mo_ex:
-                same_mo_ex = sorted(same_mo_ex)
-                ex_to_remove = same_mo_ex.pop(0)
-                if ex_to_remove in copy_excitations:
-                    # 'Move' the first entry of same_mo_index from copy_excitations to result
-                    index = copy_excitations.index(ex_to_remove)
-                    result.append(copy_excitations.pop(index))
-            prev = None
-            continue
-        if copy_excitations:
-            # Remove the first entry from the sorted list of remaining excitations and add it to result
-            prev = copy_excitations.pop(0)
-            result.append(prev)
-    return result
+def filter_OV_transition(unfiltered_list, n_elec, n_orb):
+    """
+    Filters to keep only O->V transitions
+    Used for non generalised ansatz
+    """
+    occupied = set(range(n_elec))
+    virtual = set(range(n_elec, 2*n_orb))
+    filtered_list = [transition for transition in unfiltered_list 
+                     if set(transition[0]).issubset(occupied) 
+                     and set(transition[1]).issubset(virtual)]
+    return filtered_list
 
+def filter_spin(unfiltered_list):
+    """
+    Filters to keep only spin conserved transitions (m = 0) 
+    Different from spin-adapt --> just counts total spin of destroyed and created
+    Used for most ansatz 
+    """
+    def sum_spin(index_list):
+        return sum(i % 2 for i in index_list)
+    filtered_list = [transition for transition in unfiltered_list 
+                     if sum_spin(transition[0]) == sum_spin(transition[1])]
+    return filtered_list
+    
+def filter_paired(unfiltered_list):
+    """
+    Filters to only keep paired doubles, ie every doubles term in transition must be
+    from the same spatial orbital (1a 1b) ok, (1a 2b) reject 
+    Only make sense for EVEN ranks here because ODD ranks will just kill everything
+    """
+    def is_made_of_pairs(index_tuple):
+        spatial_to_spins = {}
+        for i in index_tuple:
+            spatial = i // 2
+            spin = i % 2
+            spatial_to_spins.setdefault(spatial, set()).add(spin)
+        return all(spins == {0, 1} for spins in spatial_to_spins.values())
 
+    filtered_list = [transition for transition in unfiltered_list
+                     if is_made_of_pairs(transition[0])
+                     and is_made_of_pairs(transition[1])]
+    return filtered_list
+
+def group_spin_adapt(unfiltered_list):
+    def spin2spatial(index_lists):
+        from_index = [i // 2 for i in index_lists[0]]
+        to_index = [i // 2 for i in index_lists[1]]
+        return [from_index, to_index]
+    unique_keys = set([spin2spatial(transition) for transition in unfiltered_list])
+    sorted_groups = [[transition for transition in unfiltered_list
+                      if spin2spatial(transition) == key] 
+                      for key in unique_keys]
+    return sorted_groups
+
+def group_spin_adapt(unfiltered_list):
+    """
+    Group excitations by spatial hole pattern and spatial particle pattern.
+    Used for UCCSDSinglet-style parameter tying.
+    """
+    def spin2spatial(transition):
+        holes, excited = transition
+        spatial_holes = tuple(sorted(i // 2 for i in holes))
+        spatial_excited = tuple(sorted(a // 2 for a in excited))
+        return spatial_holes, spatial_excited
+
+    groups = {}
+    for transition in unfiltered_list:
+        key = spin2spatial(transition)
+        groups.setdefault(key, []).append(transition)
+
+    return list(groups.values())
+
+"""
+TBC UPDATED 
+"""
 # UCCSD Excitation Generator
 def generate_UCCSD_excitations(n_elec, n_orbs):
     param_excitations = {}  

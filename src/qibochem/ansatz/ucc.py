@@ -344,12 +344,20 @@ class Ansatz_UCCDSinglet(UCCAnsatz):
                                                                 paired=False, spin_adapt=True)
         return doubles_excitations
 
-class Ansatz_kUpCCGSDSinglet(UCCAnsatz, k=1):
+class Ansatz_kUpCCGSDSinglet(UCCAnsatz):
+    def __init__(self, mol, k=1, **kwargs):
+        self.k = k
+        super().__init__(mol, **kwargs)
+
     def excitations(self):
-        singles_excitations = self._generate_ansatz_excitations(rank=1, generalised=True, spin_conserve=True, 
+        param_excitations = {}
+        for iteration in range(self.k):
+            singles_excitations = self._generate_ansatz_excitations(rank=1, generalised=True, spin_conserve=True, 
                                                                 paired=False, spin_adapt=False)
-        doubles_excitations = self._generate_ansatz_excitations(rank=2, generalised=True, spin_conserve=True, 
-                                                                paired=False, spin_adapt=False)
-        pass
-        # TBC 
-        # Add in k values, list of params just add on
+            doubles_excitations = self._generate_ansatz_excitations(rank=2, generalised=True, spin_conserve=True, 
+                                                                paired=True, spin_adapt=False)
+            for key, value in singles_excitations.items():
+                param_excitations[f"{key}_k{iteration}"] = value
+            for key, value in doubles_excitations.items():
+                param_excitations[f"{key}_k{iteration}"] = value
+        return param_excitations

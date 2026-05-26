@@ -140,7 +140,7 @@ class UCCAnsatz:
         self.n_elec = (self.mol.nelec
                        if self.mol.n_active_e is None
                        else self.mol.n_active_e)
-
+        # SPIN ORBITALS
         self.n_orbs = (self.mol.nso 
                        if self.mol.n_active_orbs is None 
                        else self.mol.n_active_orbs)
@@ -190,7 +190,7 @@ class UCCAnsatz:
         if paired:
             excitations = filter_paired(excitations)
         if spin_adapt:
-            grouped_excitaitons = group_spin_adapt(excitations)
+            grouped_excitations = group_spin_adapt(excitations)
         else:
             # Group the excitations regardless to preserve data structure
             grouped_excitations = [[excitation] for excitation in excitations] 
@@ -199,7 +199,6 @@ class UCCAnsatz:
                                             for group in grouped_excitations]
         # Sort the groups 
         sorted_flattened_groups = sort_excitations(flattened_grouped_excitations)
-        # Tokenise then sort???
         rank_map = {1: "s", 2: "d", 3: "t", 4: "q"}
         label = (f"{rank_map[rank]}"
                  f"{'g' if generalised else ''}"
@@ -207,7 +206,7 @@ class UCCAnsatz:
                  f"{'p' if paired else ''}")
         # Sort the excitations 
         return {f"{label}{count}": excitation
-                for excitation, count in enumerate(excitations)}
+                for count, excitation in enumerate(sorted_flattened_groups)}
 
     def _build_circuit(self, param_values):
         # Default should be true to include the HF state 
@@ -218,11 +217,10 @@ class UCCAnsatz:
         # Add on the Gates for every ANSATZ Parameter 
         for name in self.param_names:
             theta = param_values[name]
-            for excitations in self.param_excitations[name]:
-                for excitation in excitations:
-                    circuit += ucc_circuit(self.n_orbs, excitation, theta=theta,
-                                           trotter_steps=self.trotter_steps,
-                                           ferm_qubit_map=self.ferm_qubit_map)
+            for excitation in self.param_excitations[name]:
+                circuit += ucc_circuit(self.n_orbs, excitation, theta=theta,
+                                       trotter_steps=self.trotter_steps,
+                                       ferm_qubit_map=self.ferm_qubit_map)
         return circuit
 
     # Function to map the param_excitations into the corresponding CIRCUIT parameters
@@ -275,9 +273,9 @@ class UCCAnsatz:
         return {name: theta for name, theta in zip(self.param_names, theta_vector)}
 
     # Function for the optimiser to reconstruct the circuit and get expectation value of the hamiltonian
-    def _get_energy(self, theta_vector, protocol):
+    def _get_energy(self, theta_vector):
         self._set_params(self._vector2params(theta_vector))
-        return self.protocol(self.circuit, self.hamiltonian)
+        return self.protocol.evaluate(self.circuit, self.hamiltonian)
     
 
     """

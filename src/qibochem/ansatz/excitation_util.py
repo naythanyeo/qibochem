@@ -1,46 +1,5 @@
-"""
-Utility functions that can be used by different ansatzes
-"""
-def mp2_amplitude(excitation, orbital_energies, tei):
-    r"""
-    Calculate the MP2 guess amplitude for a single UCC circuit: 0.0 for a single excitation.
-        for a double excitation (In SO basis): :math:`t_{ij}^{ab} = (g_{ijab} - g_{ijba}) / (e_i + e_j - e_a - e_b)`
-
-    Args:
-        excitation: Iterable of spin-orbitals representing a excitation. Must have either 2 or 4 elements exactly,
-            representing a single or double excitation respectively.
-        orbital_energies: eigenvalues of the Fock operator, i.e. orbital energies
-        tei: Two-electron integrals in MO basis and second quantization notation
-
-    Returns:
-        MP2 guess amplitude (float)
-    """
-    # Checks validity of excitation argument
-    assert len(excitation) % 2 == 0 and len(excitation) // 2 <= 2, f"{excitation} must have either 2 or 4 elements"
-    # If single excitation, can just return 0.0 directly
-    if len(excitation) == 2:
-        return 0.0
-
-    # Convert orbital indices to be in MO basis
-    mo_orbitals = [orbital // 2 for orbital in excitation]
-    # Numerator: g_ijab - g_ijba
-    g_ijab = (
-        tei[tuple(mo_orbitals)]  # Can index directly using the MO TEIs
-        if (excitation[0] + excitation[3]) % 2 == 0 and (excitation[1] + excitation[2]) % 2 == 0
-        else 0.0
-    )
-    g_ijba = (
-        tei[tuple(mo_orbitals[:2] + mo_orbitals[2:][::-1])]  # Reverse last two terms
-        if (excitation[0] + excitation[2]) % 2 == 0 and (excitation[1] + excitation[3]) % 2 == 0
-        else 0.0
-    )
-    numerator = g_ijab - g_ijba
-    # Denominator is directly from the orbital energies
-    denominator = sum(orbital_energies[mo_orbitals[:2]]) - sum(orbital_energies[mo_orbitals[2:]])
-    return numerator / denominator
-
-
-
+import numpy as np
+from itertools import product, combinations
 """
 EXCITATION GENERATION FUNCTIONS 
 These set of excitation generators enumerate all possibilities so it is easier to build generalised ansatz too 
@@ -50,9 +9,7 @@ In general an Ansatz will then be constructed from a combination of these functi
 """
 
 # Generate All Excitations
-from itertools import product, combinations
-
-def generate_excitations(rank, n_orb): 
+def generate_excitations(rank, n_orbs): 
     """
     Function to generate ALL possible excitations for a particular rank
     First groups them by sets with combinations to prevent overlap 
@@ -62,18 +19,17 @@ def generate_excitations(rank, n_orb):
     Doubles: ((1, 2), (3, 4)), ((1, 2), (3, 5)) ... 
     Generally: ((Excite from Sets), (Excite to Sets))
     """
-    n_spin_orb = 2*n_orb
-    index_sets = list(combinations(range(n_spin_orb), r=rank))
+    index_sets = list(combinations(range(n_orbs), r=rank))
     excitations = list(product(index_sets, repeat = 2))
     return excitations
 
-def filter_OV_transition(unfiltered_list, n_elec, n_orb):
+def filter_OV_transition(unfiltered_list, n_elec, n_orbs):
     """
     Filters to keep only O->V transitions
     Used for non generalised ansatz
     """
     occupied = set(range(n_elec))
-    virtual = set(range(n_elec, 2*n_orb))
+    virtual = set(range(n_elec, n_orbs))
     filtered_list = [transition for transition in unfiltered_list 
                      if set(transition[0]).issubset(occupied) 
                      and set(transition[1]).issubset(virtual)]
@@ -168,4 +124,49 @@ def sort_excitations(excitations_list):
             token.extend(excitation)
         return tuple(token)
     return sorted(excitations_list, key=group_token)
-    
+
+"""
+Other utility functions for ansatzes
+"""
+def mp2_amplitude(excitation, orbital_energies, tei):
+    r"""
+    Calculate the MP2 guess amplitude for a single UCC circuit: 0.0 for a single excitation.
+        for a double excitation (In SO basis): :math:`t_{ij}^{ab} = (g_{ijab} - g_{ijba}) / (e_i + e_j - e_a - e_b)`
+
+    Args:
+        excitation: Iterable of spin-orbitals representing a excitation. Must have either 2 or 4 elements exactly,
+            representing a single or double excitation respectively.
+        orbital_energies: eigenvalues of the Fock operator, i.e. orbital energies
+        tei: Two-electron integrals in MO basis and second quantization notation
+
+    Returns:
+        MP2 guess amplitude (float)
+    """
+    # Checks validity of excitation argument
+    assert len(excitation) % 2 == 0 and len(excitation) // 2 <= 2, f"{excitation} must have either 2 or 4 elements"
+    # If single excitation, can just return 0.0 directly
+    if len(excitation) == 2:
+        return 0.0
+    # Convert orbital indices to be in MO basis
+    mo_orbitals = [orbital // 2 for orbital in excitation]
+    # Numerator: g_ijab - g_ijba
+    g_ijab = (
+        tei[tuple(mo_orbitals)]  # Can index directly using the MO TEIs
+        if (excitation[0] + excitation[3]) % 2 == 0 and (excitation[1] + excitation[2]) % 2 == 0
+        else 0.0
+    )
+    g_ijba = (
+        tei[tuple(mo_orbitals[:2] + mo_orbitals[2:][::-1])]  # Reverse last two terms
+        if (excitation[0] + excitation[2]) % 2 == 0 and (excitation[1] + excitation[3]) % 2 == 0
+        else 0.0
+    )
+    numerator = g_ijab - g_ijba
+    # Denominator is directly from the orbital energies
+    # Guards added against denominator and amplitude to catch nan or inf values
+    denominator = sum(orbital_energies[mo_orbitals[:2]]) - sum(orbital_energies[mo_orbitals[2:]])
+    if abs(denominator) < 1e-12:
+        return 0.0
+    amplitude = numerator / denominator
+    if np.isnan(amplitude):
+        return 0.0
+    return amplitude

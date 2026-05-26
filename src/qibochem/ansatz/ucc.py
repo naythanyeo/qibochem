@@ -11,7 +11,8 @@ from qibo.optimizers import optimize
 
 from qibochem.ansatz.hf_reference import hf_circuit
 from qibochem.ansatz.excitation_util import (generate_excitations, mp2_amplitude, filter_OV_transition, 
-                                             filter_paired, filter_spin, group_spin_adapt, flatten_excitation)
+                                             filter_paired, filter_spin, group_spin_adapt, flatten_excitation,
+                                             sort_excitations)
 
 
 def expi_pauli(n_qubits, pauli_string, theta):
@@ -51,7 +52,7 @@ def expi_pauli(n_qubits, pauli_string, theta):
     circuit.add(gates.RZ(pauli_ops[0][0], rz_parameter))
     # 4. Add CNOTs to all pairs of qubits in pauli_ops
     circuit.add(gates.CNOT(pauli_ops[_i + 1][0], pauli_ops[_i][0]) for _i in range(n_pauli_ops - 1))
-    # 3. Change back to the Z basis
+    # 5. Change back to the Z basis
     circuit.add(_gate.dagger() for _gate in reversed(basis_changes))
     return circuit
 
@@ -197,6 +198,7 @@ class UCCAnsatz:
         flattened_grouped_excitations = [[flatten_excitation(excitation) for excitation in group]
                                             for group in grouped_excitations]
         # Sort the groups 
+        sorted_flattened_groups = sort_excitations(flattened_grouped_excitations)
         # Tokenise then sort???
         rank_map = {1: "s", 2: "d", 3: "t", 4: "q"}
         label = (f"{rank_map[rank]}"

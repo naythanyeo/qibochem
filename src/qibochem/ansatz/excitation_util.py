@@ -40,23 +40,9 @@ def mp2_amplitude(excitation, orbital_energies, tei):
     return numerator / denominator
 
 
-def sort_excitations(excitations):
-    """
-    *NEW SORTING METHOD NEEDED* 
-    Likely sort without chemistry, just solely by getting index position in n^2 / n^4 subspace (singles / doubles)
-    Sorting here is only for engeineering reproducability --> End goal is for the coefficient labels to be constant 
-    i.e. we just need a consistent mapping from excitation to ansatz label 
-
-    Briefly 
-    label: {rank}{generalised}{singlet_adapt}{paired}{index}_k{k_index}
-    eg. for UCCGSDSinglet --> it is generalised and singlet adapt, but not paired, so coefficients will be
-    SGS0, SGS1 ... DGS0, DGS1 ... (for singles and doubles)
-    for k-up each circuit layer has the k0 then k1 then k2 (for total 3 paired circuits)
-    """
-    pass
 
 """
-NEW EXCITATION GENERATION FUNCTIONS 
+EXCITATION GENERATION FUNCTIONS 
 These set of excitation generators enumerate all possibilities so it is easier to build generalised ansatz too 
 First layer generates ALL excitations 
 Subsequent defines filter and grouping functions that can be used to restrict ansatz 
@@ -153,10 +139,33 @@ def group_spin_adapt(unfiltered_list):
 
     return list(groups.values())
 
-# Excitations must be flattened before passing into UCC_Circuit 
-# Generation works with excitaitons grouped by ((hole), (excitation)), eg ((0, 1), (2, 3))
-# But UCC_Circuit accepts (hole, excitation) (0, 1, 2, 3)
-# Easier to pass into open fermion that way
 def flatten_excitation(excitation):
+    """
+    Flattens excitations from ((hole), (excitation)), eg ((0, 1), (2, 3)) to (hole, excitation) (0, 1, 2, 3)
+    to match the input parameters of UCC_Circuit
+    """
     holes, particles = excitation
     return tuple(holes) + tuple(particles)
+
+def sort_excitations(excitations_list):
+    """
+    Previous sorting method used chemical rules to sort excitations, but not too practical
+    for many excitations. New sorting function sorts a list of grouped excitations in lexicographic order 
+    because it is more practical. Sorting is just to ensure engineering consistency.
+
+    INPUT:
+        A list of grouped excitations:
+        [[(0, 1, 2, 3), (0, 1, 4, 5)], [(0, 1, 5, 6), (0, 1, 7, 8)], ... ]
+    OUTPUT:
+        Same list, but sorted by lexicographic token order 
+    * Groups are first sorted lexicographically so this process will be deterministic 
+    """
+    # Flattens the grouped excitations
+    def group_token(group):
+        canonical_group = sorted(group)
+        token = []
+        for excitation in canonical_group:
+            token.extend(excitation)
+        return tuple(token)
+    return sorted(excitations_list, key=group_token)
+    

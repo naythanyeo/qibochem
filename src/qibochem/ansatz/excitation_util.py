@@ -1,8 +1,6 @@
 """
 Utility functions that can be used by different ansatzes
 """
-
-
 def mp2_amplitude(excitation, orbital_energies, tei):
     r"""
     Calculate the MP2 guess amplitude for a single UCC circuit: 0.0 for a single excitation.
@@ -154,3 +152,11 @@ def group_spin_adapt(unfiltered_list):
         groups.setdefault(key, []).append(transition)
 
     return list(groups.values())
+
+# Excitations must be flattened before passing into UCC_Circuit 
+# Generation works with excitaitons grouped by ((hole), (excitation)), eg ((0, 1), (2, 3))
+# But UCC_Circuit accepts (hole, excitation) (0, 1, 2, 3)
+# Easier to pass into open fermion that way
+def flatten_excitation(excitation):
+    holes, particles = excitation
+    return tuple(holes) + tuple(particles)

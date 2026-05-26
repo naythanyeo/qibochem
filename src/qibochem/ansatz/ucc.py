@@ -10,7 +10,8 @@ from qibo import Circuit, gates
 from qibo.optimizers import optimize
 
 from qibochem.ansatz.hf_reference import hf_circuit
-from qibochem.ansatz.excitation_util import generate_excitations, mp2_amplitude, sort_excitations, ansatz2param_excitations
+from qibochem.ansatz.excitation_util import (generate_excitations, mp2_amplitude, filter_OV_transition, 
+                                             filter_paired, filter_spin, group_spin_adapt, flatten_excitation)
 
 
 def expi_pauli(n_qubits, pauli_string, theta):
@@ -135,17 +136,13 @@ class UCCAnsatz:
 
     def __post_init__(self):
         # Follow the active space definitions from the mol object
-        self.n_elec = (
-            self.mol.nelec
-            if self.mol.n_active_e is None
-            else self.mol.n_active_e
-        )
+        self.n_elec = (self.mol.nelec
+                       if self.mol.n_active_e is None
+                       else self.mol.n_active_e)
 
-        self.n_orbs = (
-            self.mol.nso
-            if self.mol.n_active_orbs is None
-            else self.mol.n_active_orbs
-        )
+        self.n_orbs = (self.mol.nso 
+                       if self.mol.n_active_orbs is None 
+                       else self.mol.n_active_orbs)
         """
         Here the param_excitations is a unique dictionary that maps to each ansatz 
         param_excitaitons format {"s0": [(0, 2), "s1": [(1, 3)....]}
@@ -160,10 +157,8 @@ class UCCAnsatz:
         # Define initial parameters, if mp2 is false then default to zeros 
         # Here the parameters are stored as a dictionary {s0: 0.3, s1: 0.2...}
         if self.use_mp2_guess:
-            self.initial_params = {
-                name: mp2_amplitude(excitations[0], self.mol.eps, self.mol.tei)
-                for name, excitations in self.param_excitations.items()
-            }
+            self.initial_params = {name: mp2_amplitude(excitations[0], self.mol.eps, self.mol.tei)
+                                   for name, excitations in self.param_excitations.items()}
         else:
             self.initial_params = {name: 0.0 for name in self.param_names}
 
@@ -174,13 +169,9 @@ class UCCAnsatz:
 
         # Here, if the final params is already set, then final_circuit will be built 
         # If input final_params, ansatz object will treat it as optimised coefficients 
-        # Important that the final parameters input must match the param_excitations
-        # Meaning that finalised parameters can only be used for same ansatz type 
         if self.final_params is not None:
             self._set_params(self.final_params)
             self.final_circuit = self.circuit.copy(deep=True)
-            # Deep=True to separate the gates
-
         # Here if you set the final parameters, should be able to call directly 
         # VQE_circuit = UCC_Ansatz.final_circuit --> Pass this circuit into QSE / others 
 
@@ -189,6 +180,33 @@ class UCCAnsatz:
             "Cannot call UCCAnsatz directly. Use a concrete ansatz class such as UCCSD, UCCGSD, or UCCSDSinglet."
         )
 
+    def _generate_ansatz_excitations(self, rank, generalised, spin_conserve, paired, spin_adapt):
+        excitations = generate_excitations(rank, self.n_orbs)
+        if not generalised:
+            excitations = filter_OV_transition(excitations, self.n_elec, self.n_orbs)
+        if spin_conserve:
+            excitations = filter_spin(excitations)
+        if paired:
+            excitations = filter_paired(excitations)
+        if spin_adapt:
+            grouped_excitaitons = group_spin_adapt(excitations)
+        else:
+            # Group the excitations regardless to preserve data structure
+            grouped_excitations = [[excitation] for excitation in excitations] 
+        # Flatten excitations to pass into UCC_Circuit 
+        flattened_grouped_excitations = [[flatten_excitation(excitation) for excitation in group]
+                                            for group in grouped_excitations]
+        # Sort the groups 
+        # Tokenise then sort???
+        rank_map = {1: "s", 2: "d", 3: "t", 4: "q"}
+        label = (f"{rank_map[rank]}"
+                 f"{'g' if generalised else ''}"
+                 f"{'s' if spin_adapt else ''}"
+                 f"{'p' if paired else ''}")
+        # Sort the excitations 
+        return {f"{label}{count}": excitation
+                for excitation, count in enumerate(excitations)}
+
     def _build_circuit(self, param_values):
         # Default should be true to include the HF state 
         if self.include_hf:
@@ -196,30 +214,24 @@ class UCCAnsatz:
         else:
             circuit = Circuit(self.n_orbs)
         # Add on the Gates for every ANSATZ Parameter 
-        # All the excitations will be mapped 
-        # Param_excitaiton will be constructed based on the ansatz 
-        # Note that the order of construction of circuit should match the order of param_map
         for name in self.param_names:
             theta = param_values[name]
-            for excitation in self.param_excitations[name]:
-                circuit += ucc_circuit(
-                    self.n_orbs,
-                    excitation,
-                    theta=theta,
-                    trotter_steps=self.trotter_steps,
-                    ferm_qubit_map=self.ferm_qubit_map,
-                )
+            for excitations in self.param_excitations[name]:
+                for excitation in excitations:
+                    circuit += ucc_circuit(self.n_orbs, excitation, theta=theta,
+                                           trotter_steps=self.trotter_steps,
+                                           ferm_qubit_map=self.ferm_qubit_map)
         return circuit
 
     # Function to map the param_excitations into the corresponding CIRCUIT parameters
-    # Follows largely the ucc_circuit construction but removes unnecesary parts 
+    # Outputs the coefficients of each circuit parameter relative to the ansatz parameters
     def _get_param_map(self):
         param_map = {}
-
         for name, excitations in self.param_excitations.items():
             param_map[name] = []
-
+            # Excitations can be a list of excitations with grouped paramaeters (tied together) for spin adapt ansatz
             for excitation in excitations:
+                # Excitation is one flattened list of excitations 
                 n_orbitals = len(excitation)
                 sorted_orbitals = sorted(excitation, reverse=True)
                 # Create the anti hermitian operator string 
@@ -241,7 +253,7 @@ class UCCAnsatz:
                         param_map[name].append(gate_coeff)
         return param_map
 
-    # Get the circuit parameters given parameters in the dictionary form}
+    # Get the circuit parameters given parameters in the dictionary form
     def _get_circuit_parameters(self, param_values):
         circuit_params = []
         for name in self.param_names:
@@ -252,47 +264,35 @@ class UCCAnsatz:
 
     # Update circuit 
     def _set_params(self, param_values):
-        self.circuit.set_parameters(self._get_circuit_parameters(param_values))
+        # Param_values is a DICTIONARY of ANSATZ parameters 
+        circuit_parameters = self._get_circuit_parameters(param_values) # Maps to circuit parameters via param_map
+        self.circuit.set_parameters(circuit_parameters)
     
     # Convert vector into parameter dictionary 
     def _vector2params(self, theta_vector):
         return {name: theta for name, theta in zip(self.param_names, theta_vector)}
 
     # Function for the optimiser to reconstruct the circuit and get expectation value of the hamiltonian
-    def _vector2energy(self, theta_vector):
+    def _get_energy(self, theta_vector, protocol):
         self._set_params(self._vector2params(theta_vector))
-        if self.n_shots is not None:
-            # for future implementation??? 
-            raise NotImplementedError("Shot-based VQE energy estimation is not implemented yet.")
-        # This returns STATEVECTOR expectation value 
-        return np.real(self.hamiltonian.expectation(self.circuit))
+        return self.protocol(self.circuit, self.hamiltonian)
     
 
-    """TODO
-    CONVERT THIS INTO ONE FUNCTION. INCLUDE PROTOCOLS HERE
-    """
-    
     """
     Function to run VQE optimisation
     Build on top of qibo.optimize function
     Finds the optimal parameters and constructs the final circuit
-    Prints the final VQE energy
-    VQE_parameters can be accessed through ansatz.final_params
-    Final circuit for future calculatiosn can be accessed through ansatz.final_circuit
     """
 
-    def run_vqe(self, method="BFGS", n_shots=None, **optimizer_kwargs):
+    def run_vqe(self, protocol, method="BFGS", **optimizer_kwargs):
         self.hamiltonian = self.mol.hamiltonian("sym", ferm_qubit_map=self.ferm_qubit_map)
-        self.n_shots = n_shots
-        # First convert the initial parameters (dictionary) into a vector form for the optimizer
+        # Convert the initial parameters (dictionary) into a vector form for the optimizer
         initial_vector = np.array([self.initial_params[name] for name in self.param_names])
         # The vector that optimize uses is length equal to number of ANSATZ parameters 
         # The variable circuit_params contains the FULL CIRCUIT parameters 
-        vqe_energy, optimised_vector, extra = optimize(
-                                                self._vector2energy, 
-                                                initial_vector, 
-                                                method=method, 
-                                                **optimizer_kwargs)
+        self.protocol = protocol # Set self attribute protocol for get_energy to run
+        vqe_energy, optimised_vector, extra = optimize(self._get_energy, initial_vector, 
+                                                       method=method, **optimizer_kwargs)
         # Convert the outut optimised vector back into parameter dictionary form
         self.final_params = self._vector2params(optimised_vector)
         # Set the circuit parameters to optimised parameters and build final circuit
@@ -301,13 +301,53 @@ class UCCAnsatz:
         self.vqe_energy = vqe_energy
         self.vqe_result = extra
 
-        return vqe_energy, self.final_params, extra
+        return vqe_energy, self.final_params, self.final_circuit
     
 """
-GENERAL STRUCTURE FOR UCC ANSATZ
-Will call helper functinos from utils 
+ALL UCC ANSATZ SUBCLASSES
 """
-from excitation_util import generate_excitations, filter_OV_transition, filter_spin, filter_paired, group_excitations
-class UCCSD(UCCAnsatz):
+class Ansatz_UCCSD(UCCAnsatz):
     def excitations(self):
+        singles_excitations = self._generate_ansatz_excitations(rank=1, generalised=False, spin_conserve=True, 
+                                                                paired=False, spin_adapt=False)
+        doubles_excitations = self._generate_ansatz_excitations(rank=2, generalised=False, spin_conserve=True, 
+                                                                paired=False, spin_adapt=False)
+        return {**singles_excitations, **doubles_excitations}
+
+class Ansatz_UCCSDSinglet(UCCAnsatz):
+    def excitations(self):
+        singles_excitations = self._generate_ansatz_excitations(rank=1, generalised=False, spin_conserve=True, 
+                                                                paired=False, spin_adapt=True)
+        doubles_excitations = self._generate_ansatz_excitations(rank=2, generalised=False, spin_conserve=True, 
+                                                                paired=False, spin_adapt=True)
+        return {**singles_excitations, **doubles_excitations}
+
+class Ansatz_UCCGSD(UCCAnsatz):
+    def excitations(self):
+        singles_excitations = self._generate_ansatz_excitations(rank=1, generalised=True, spin_conserve=True, 
+                                                                paired=False, spin_adapt=False)
+        doubles_excitations = self._generate_ansatz_excitations(rank=2, generalised=True, spin_conserve=True, 
+                                                                paired=False, spin_adapt=False)
+        return {**singles_excitations, **doubles_excitations}
+
+class Ansatz_UCCD(UCCAnsatz):
+    def excitations(self):
+        doubles_excitations = self._generate_ansatz_excitations(rank=2, generalised=False, spin_conserve=True, 
+                                                                paired=False, spin_adapt=False)
+        return doubles_excitations
+
+class Ansatz_UCCDSinglet(UCCAnsatz):
+    def excitations(self):
+        doubles_excitations = self._generate_ansatz_excitations(rank=2, generalised=False, spin_conserve=True, 
+                                                                paired=False, spin_adapt=True)
+        return doubles_excitations
+
+class Ansatz_kUpCCGSDSinglet(UCCAnsatz, k=1):
+    def excitations(self):
+        singles_excitations = self._generate_ansatz_excitations(rank=1, generalised=True, spin_conserve=True, 
+                                                                paired=False, spin_adapt=False)
+        doubles_excitations = self._generate_ansatz_excitations(rank=2, generalised=True, spin_conserve=True, 
+                                                                paired=False, spin_adapt=False)
         pass
+        # TBC 
+        # Add in k values, list of params just add on

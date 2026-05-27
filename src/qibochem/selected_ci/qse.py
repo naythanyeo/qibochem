@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass, field
+
 import numpy as np
 import openfermion
 
@@ -11,36 +14,36 @@ from qibochem.selected_ci.utils import assemble_matrix
 """
 GENERAL EXCITATION OPERATORS
 Here we define a few QSE Excitation Operator Generators
-These generators take in a mol object and return a list of excitation operators 
-Mol object is input because sometimes number of electrons will be used for some generators 
+These generators take in an excitation_params dictionary and return a list of excitation operators.
 """
-def generate_general_singles(mol) -> list[openfermion.FermionOperator]:
+def generate_general_singles(excitation_params: dict) -> list[openfermion.FermionOperator]:
     """Generate all spin-orbital one-body operators a_p^ a_q.
     Here general singles contains unrestricted excitations"""
-    n_spin_orbs = mol.n_active_orbs if mol.n_active_orbs is not None else mol.nso
+    n_spin_orbs = excitation_params["n_orbs"]
     operators = [openfermion.FermionOperator(f"{_i}^ {_j}")
                  for _i in range(n_spin_orbs)
                  for _j in range(n_spin_orbs)]
     return operators
 
-def generate_singlet_singles(mol) -> list[openfermion.FermionOperator]:
+def generate_singlet_singles(excitation_params: dict) -> list[openfermion.FermionOperator]:
     """Generate spin-adapt one-body operators
     Loops through spatial orbitals instead to pair the terms
     INCLUDES the number operator here"""
-    n_active_orbs = mol.n_active_orbs if mol.n_active_orbs is not None else mol.nso
+    n_active_orbs = excitation_params["n_orbs"]
     operators = [openfermion.FermionOperator(f"{2*_i}^ {2*_j}") + openfermion.FermionOperator(f"{2*_i+1}^ {2*_j+1}")
             for _i in range(n_active_orbs // 2)
             for _j in range(n_active_orbs // 2)]
     return operators
 
-def generate_triplet_singles(mol, ms=0) -> list[openfermion.FermionOperator]:
+def generate_triplet_singles(excitation_params: dict) -> list[openfermion.FermionOperator]:
     """Generate one-body triplet excitation operators for a chosen spin projection.
     Similar to singlet singles, but the triplets sign is reversed for m=0
     For m=+-1, the excitations dont need to be paired"""
+    ms = excitation_params["spin_projection"]
     if ms not in (0, 1, -1, "all"):
         raise ValueError("ms must be 0, 1, -1, or 'all'.")
 
-    n_active_orbs = mol.n_active_orbs if mol.n_active_orbs is not None else mol.nso
+    n_active_orbs = excitation_params["n_orbs"]
     n_spatial_orbs = n_active_orbs // 2
 
     def triplet_operator(_i, _j, _ms):
@@ -79,30 +82,40 @@ By default, the observable is hamiltonian (FOR NOW), but subsequently if you hav
 different observable like S^2, can initialise QSE observable with other observables instead 
 Not too hard to implement but need a general observable class to manages this
 """
+@dataclass
 class QSE_Computable:
-    def __init__(self, molecule, excitation_generator=None, ferm_qubit_map="jw"):
-        """
-        Quantum Subspace Expansion (QSE) manager.
-        Args:
-            molecule: `qibochem.driver.Molecule` instance.
-            excitation_generator: Function that generates a list of excitaiton operators
-        """
-        if ferm_qubit_map not in ("jw", "bk"):
+    molecule: object
+    excitation_generator: Callable
+    spin_projection: int | str = 0
+    ferm_qubit_map: str = "jw"
+
+    operators: list | None = field(default=None, init=False)
+    s_data: dict | None = field(default=None, init=False)
+    h_data: dict | None = field(default=None, init=False)
+    excitation_params: dict | None = field(default=None, init=False)
+
+    def __post_init__(self):
+        """Validate QSE inputs and define the excitation generator parameters."""
+        if self.excitation_generator is None:
+            raise ValueError("excitation_generator must be specified.")
+
+        if self.ferm_qubit_map not in ("jw", "bk"):
             raise ValueError("ferm_qubit_map must be 'jw' or 'bk'.")
 
-        self.molecule = molecule
-        self.excitation_generator = excitation_generator or generate_general_singles
-        self.ferm_qubit_map = ferm_qubit_map
-        self.operators = None  # List of fermion excitation operators
-        # h and s data store the operator strings and coefficients 
-        self.s_data = None
-        self.h_data = None
+        n_elec = self.molecule.n_active_e if self.molecule.n_active_e is not None else self.molecule.nelec
+        n_orbs = self.molecule.n_active_orbs if self.molecule.n_active_orbs is not None else self.molecule.nso
+
+        self.excitation_params = {
+            "n_elec": n_elec,
+            "n_orbs": n_orbs,
+            "spin_projection": self.spin_projection,
+        }
     
 
     def collate_hs_matrix_info(self):
         """Constructs the Hamiltonian and terms for each of the S/H matrix elements"""
         if self.operators is None:
-            self.operators = self.excitation_generator(self.molecule)
+            self.operators = self.excitation_generator(self.excitation_params)
 
         n_active_orbs = self.molecule.n_active_orbs if self.molecule.n_active_orbs is not None else self.molecule.nso
         dim = len(self.operators)
@@ -142,7 +155,7 @@ class QSE_Computable:
             H and S matrices as numpy arrays
         """
         # First define the excitation operators 
-        self.operators = self.excitation_generator(self.molecule)
+        self.operators = self.excitation_generator(self.excitation_params)
 
         # Update the H and S observables  
         self.collate_hs_matrix_info()

@@ -1,6 +1,5 @@
 import json
 import re
-from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -34,8 +33,8 @@ ANSATZ_FACTORIES = {
 
 # File suffix -> QSE excitation generator. Triplet output is explicitly ms=0.
 QSE_EXPANSIONS = {
-    "singlet": generate_singlet_singles,
-    "triplet_ms0": partial(generate_triplet_singles, ms=0),
+    "singlet": (generate_singlet_singles, 0),
+    "triplet_ms0": (generate_triplet_singles, 0),
 }
 
 
@@ -82,6 +81,7 @@ def run_qse(
     ansatz_factory,
     expansion,
     excitation_generator,
+    spin_projection,
     protocol,
     vqe_cache,
     vqe_params_file,
@@ -100,6 +100,7 @@ def run_qse(
     qse = QSE_Computable(
         mol,
         excitation_generator=excitation_generator,
+        spin_projection=spin_projection,
         ferm_qubit_map="jw",
     )
     h_matrix, s_matrix = qse.run_qse(final_circuit, protocol)
@@ -162,7 +163,7 @@ def main():
             mol.hf_embedding(active=active_mos, frozen=frozen_mos)
 
             for ansatz_name, ansatz_factory in ANSATZ_FACTORIES.items():
-                for expansion, excitation_generator in QSE_EXPANSIONS.items():
+                for expansion, (excitation_generator, spin_projection) in QSE_EXPANSIONS.items():
                     hs_key = (molecule_name, active_space, ansatz_name, expansion)
                     hs_file = hs_dir / f"HS_{active_space}.jsonl"
                     if hs_key in hs_done[active_space]:
@@ -177,6 +178,7 @@ def main():
                         ansatz_factory,
                         expansion,
                         excitation_generator,
+                        spin_projection,
                         protocol,
                         vqe_cache,
                         vqe_params_file,

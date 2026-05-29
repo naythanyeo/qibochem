@@ -30,11 +30,13 @@ Future considerations:
     protocols are still TBC.
 """
 
-
+import re
+from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
-
-from qibochem.measurement.optimization import measurement_basis_rotations
+import numpy as np
+from qibo import Circuit
+from qibochem.measurement.optimization import measurement_basis_rotations, group_commuting_terms
 from qibochem.measurement.result import expectation_from_samples, v_expectation
 from qibochem.measurement.shot_allocation import allocate_shots
 
@@ -62,120 +64,133 @@ class StateVectorProtocol:
 # ------------------------------------------------------------
 # BaseMeasurementProtocol
 # ------------------------------------------------------------
-# Shared base class for exact measurement, shots, and bootstrap.
-# Uses circuit.final_state as persistent state cache.
-# Does NOT persist exact probability vectors across protocols by default.
-
+@dataclass
 class BaseMeasurementProtocol:
+    grouping: str = "qwc"
+    """
+    Base measurement class for measurements with rotation
+    After initialised, circuit with final_state can be re run to save overhead cost
+    """
     def evaluate(self, circuit, observables) -> dict:
-        # Input:
-        #   circuit: Qibo circuit
-        #   observables: single observable, list, or dict[name, observable]
-        # Output:
-        #   dict[sample_label, list[dict[name, expectation_value]]]
-        # Description:
-        #   Main wrapper. Gets final_state, loops over observables, evaluates each, then transposes output format.
-        pass
+        """
+        INPUT: circuits and observables 
+        OUTPUT: expectation values in nested dictionaries 
+        Requires subclass to define the sampling method to read in probabilities 
+        Rough process
+        1) Check if circuit.final_state exist, if not run it
+        2) loop through every observable term 
+        3) for every observable, group commuting terms 
+        4) For every group, 
+        - rotate final state into measurement basis
+        - compute exact probabilities 
+        - pass into subclass sampling method called _sample_groups 
+        - output of sample_groups is a dictionary {10k_s1: , 10k_s2: ...}
+        5) For all the keys in sample_groups, evaluate all the terms in observable 
+        6) now my "output" is a dictionary {10k_s1 ...}. at every group, add on to this dictionary key value 
+        7) each observable will have a dictionary of evaluated expectations
+        8) reorder the nested dictionaries 
+        """
 
-    def _get_final_state(self, circuit) -> np.ndarray:
-        # Input: Qibo circuit
-        # Output: final statevector
-        # Description: Reuses circuit.final_state if available; otherwise executes circuit once.
-        pass
+        if circuit._final_state is None: # Re-run circuit only if it has not been run yet
+            circuit()
+        final_state = circuit._final_state
+        self.n_qubits = circuit.nqubits
+        # Generate z_vectors for measurement later
+        self._generate_z_vectors()
+        # Handles single input observables 
+        if not isinstance(observables, Mapping):
+            observables = {"O1": observables}
+        # Loops through all the observables 
+        full_observables_data = defaultdict(dict)
+        for observable_key, observable in observables.items():
+            # Output of this observable will be a dictionary of samples 
+            sample_observable_expectations = defaultdict(float)
+            # Group commuting terms
+            grouped_terms = measurement_basis_rotations(observable, grouping=self.grouping)
+            for group_expression, measurement_gates in grouped_terms:
+                rotated_final_state = self._rotate_final_state(measurement_gates, final_state)
+                exact_probabilities = np.abs(rotated_final_state) ** 2
+                # From the exact_probabilities, do the sampling here
+                # Sampled_probabilities is a dictionary with keys for different samples
+                sampled_probabilities = self._sample_probabilities(exact_probabilities)
+                for sampling_key, probability_vector in sampled_probabilities.items():
+                    expectation_value = self._probabilities2expectation(probability_vector, group_expression)
+                    sample_observable_expectations[sampling_key] += expectation_value
+            full_observables_data[observable_key] = sample_observable_expectations
+        return self._format_output(full_observables_data)
 
-    def _normalise_observables(self, observables) -> dict:
-        # Input: observable / list[observable] / dict[name, observable]
-        # Output: dict[name, observable]
-        # Description: Converts observable input into consistent labelled dictionary.
-        pass
+    def _rotate_final_state(self, measurement_gates, final_state):
+        """
+        Input: measurement_gates and final_state
+        Output: rotated_final_states
+        """
+        rotation_circuit = Circuit(self.n_qubits)
+        rotation_circuit.add(measurement_gates)
+        result = rotation_circuit(initial_state=final_state)
+        return result.state()
 
-    def _evaluate_one_observable(self, final_state, circuit, observable) -> dict:
-        # Input:
-        #   final_state: cached statevector
-        #   circuit: Qibo circuit
-        #   observable: one Hamiltonian/operator
-        # Output:
-        #   dict[sample_label, list[expectation_value]]
-        # Description:
-        #   Groups observable, rotates final_state per group, computes exact probabilities, and accumulates sampled/exact estimates.
-        pass
-
-    def _group_observable(self, observable) -> list:
-        # Input: one observable
-        # Output: list[(group_expression, measurement_gates)]
-        # Description:
-        #   Uses QiboChem grouping logic to split observable into commuting measurement groups.
-        pass
-
-    def _rotate_state(self, final_state, circuit, measurement_gates) -> np.ndarray:
-        # Input:
-        #   final_state: cached statevector
-        #   circuit: Qibo circuit metadata, mainly nqubits/backend
-        #   measurement_gates: basis-rotation / measurement info for one group
-        # Output: rotated statevector
-        # Description:
-        #   Applies only the measurement-basis rotations to a copy of final_state.
-        pass
-
-    def _state_to_probabilities(self, rotated_state) -> np.ndarray:
-        # Input: rotated statevector
-        # Output: exact Born probability vector
-        # Description:
-        #   Converts amplitudes to probabilities via |amplitude|^2.
-        pass
-
-    def _sample_probabilities(self, exact_probabilities, shots) -> np.ndarray:
-        # Input:
-        #   exact_probabilities: exact probability vector
-        #   shots: number of samples
-        # Output: sampled probability vector
-        # Description:
-        #   Draws multinomial samples and returns normalised sampled probabilities.
-        pass
-
-    def _probabilities_to_group_expectation(self, probabilities, group_expression) -> complex:
-        # Input:
-        #   probabilities: exact or sampled probability vector
-        #   group_expression: commuting group terms
-        # Output: group expectation contribution
-        # Description:
-        #   Reconstructs expectation contribution of all terms in one commuting group.
-        pass
-
-    def _evaluate_group_from_probabilities(self, exact_probabilities, group_expression) -> dict:
-        # Input:
-        #   exact_probabilities: exact probability vector for one group
-        #   group_expression: commuting group terms
-        # Output:
-        #   dict[sample_label, list[group_expectation]]
-        # Description:
-        #   Abstract protocol-specific step. Subclasses define how exact probabilities become expectation estimates.
+    def _sample_probabilities(self, exact_probabilities):
+        """
+        Defined at a subclass level for how to sample the probabilities
+        """
         raise NotImplementedError
 
-    def _initialise_observable_values(self) -> dict:
-        # Input: none / protocol config
-        # Output: dict[sample_label, list[initial_value]]
-        # Description:
-        #   Creates zero/constant-filled accumulators matching the protocol output shape.
-        pass
-
-    def _add_group_values(self, observable_values, group_values) -> dict:
-        # Input:
-        #   observable_values: current accumulated values
-        #   group_values: contribution from one commuting group
-        # Output: updated observable_values
-        # Description:
-        #   Adds group expectation contributions into observable-level estimates.
-        pass
-
-    def _transpose_results(self, by_observable) -> dict:
-        # Input:
-        #   dict[name, dict[sample_label, list[value]]]
-        # Output:
-        #   dict[sample_label, list[dict[name, value]]]
-        # Description:
-        #   Reorders output so each sample contains all observable values.
-        pass
+    def _generate_z_vectors(self):
+        """
+        The tensor product sequence will produce probabilities sorted lexicographically 
+        Evaluating Z0 for eg, will yield eigenvalue 1 for the first 2^(n-1) terms, then -1 for the rest 
+        Every successive term Zq will "swap" eigenvalues twice as often because binary 
+        So the swapping length between eigenvalues is 2^(n-q-1)
+        Pre calculate and cache z_vectors so that you can reconstruct measurement easier
+        """
+        n = self.n_qubits
+        z_vectors = {}
+        for q in range(n):
+            swap_length = 2 ** (n - q - 1) 
+            block = np.array([1] * swap_length + [-1] * swap_length)
+            repeats = 2 ** q
+            z_vectors[q] = np.tile(block, repeats)
+        self._z_vectors = z_vectors
+    
+    def _probabilities2expectation(self, probability_vector, group_expression):
+        # Read in the group_expression and probability_vector, output overall summed expectation_value
+        expectation_value = 0.0
+        for term, coeff in group_expression.as_coefficients_dict().items():
+            if term == 1:
+                expectation_value += coeff
+                continue
+            # Find a list of qubit positions for each term
+            qubits = [int(q) for q in re.findall(r"[XYZ](\d+)", str(term))] 
+            z_vector = np.prod([self._z_vectors[q] for q in qubits], axis = 0)
+            expectation_value += coeff * np.dot(z_vector, probability_vector)
+        return expectation_value
+    
+    @staticmethod
+    def _format_output(full_observables_data):
+        """
+        Helper function to format the output here because it is currently a nested dictionary of
+        sample keys inside a dictionary of observable keys. For protocols that do not call samples
+        or have only 1 observable, then we do not return nested dictionaries. This allows protocol
+        to be more robust and output exactly what is necessary. If nested dictionary is output, this
+        function also swaps it, such that sample keys are on the outer nest which makes more sense imo
+        """
+        if len(full_observables_data) == 1:
+            _, sample_values = list(full_observables_data.items())[0]
+            if len(sample_values) == 1:
+                _, value = list(sample_values.items())[0]
+                return value
+            return dict(sample_values)
+        output = defaultdict(dict)
+        for observable_key, sample_values in full_observables_data.items():
+            for sample_key, value in sample_values.items():
+                output[sample_key][observable_key] = value
+        if len(output) == 1:
+            _, observable_values = list(output.items())[0]
+            return dict(observable_values)
+        return {
+            sample_key: dict(observable_values)
+            for sample_key, observable_values in output.items()
+        }
 
 
 # ------------------------------------------------------------
@@ -250,4 +265,3 @@ class BootstrapMeasurementProtocol(BaseMeasurementProtocol):
         # Description:
         #   For each sample size, draws n_resamples multinomial samples and reconstructs group expectations.
         pass
-

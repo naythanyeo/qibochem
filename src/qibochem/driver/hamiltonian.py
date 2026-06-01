@@ -3,7 +3,7 @@ Helper functions for obtaining and transforming the molecular Hamiltonian
 """
 
 from functools import reduce
-
+import sympy as sp
 import openfermion
 from qibo import symbols
 from qibo.hamiltonians import SymbolicHamiltonian
@@ -58,11 +58,25 @@ def _qubit_to_symbolic_hamiltonian(q_hamiltonian, n_qubits=None):
     Returns:
         qibo.hamiltonians.SymbolicHamiltonian
     """
-    symbolic_ham = sum(
-        reduce(lambda x, y: x * y, (getattr(symbols, pauli_op)(qubit) for qubit, pauli_op in pauli_string), coeff)
-        # Sums over each individual Pauli string in the QubitOperator
-        for operator in q_hamiltonian.get_operators()
-        # .terms gives one operator as a single-item dictionary, e.g. {((1: "X"), (2: "Y")): 0.33}
-        for pauli_string, coeff in operator.terms.items()
-    )
+    # Cache Qibo Pauli symbols so repeated X/Y/Z operators on the same qubit
+    # are not rebuilt for every Pauli string.
+    # Eg X0Y0, X0Y1 --> X(0) symbolic is only being built 1
+    pauli_symbols = {
+        (pauli_op, qubit): getattr(symbols, pauli_op)(qubit)
+        for pauli_string in q_hamiltonian.terms
+        for qubit, pauli_op in pauli_string
+    }
+
+    # Build each Pauli string as one SymPy product, then give all terms to
+    # SymPy at once. This avoids slow repeated expression canonicalization
+    # from Python's incremental sum(...).
+    symbolic_terms = [
+        sp.Mul(
+            coeff,
+            *(pauli_symbols[(pauli_op, qubit)] for qubit, pauli_op in pauli_string),
+        )
+        for pauli_string, coeff in q_hamiltonian.terms.items()
+    ]
+
+    symbolic_ham = sp.Add(*symbolic_terms)
     return SymbolicHamiltonian(symbolic_ham, nqubits=n_qubits)

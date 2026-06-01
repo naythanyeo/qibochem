@@ -67,7 +67,7 @@ class StateVectorProtocol:
 # ------------------------------------------------------------
 @dataclass
 class BaseMeasurementProtocol:
-    grouping: str = "qwc"
+    grouping: str = "qwc_fast"
     """
     Base measurement class for measurements with rotation
     After initialised, circuit with final_state can be re run to save overhead cost
@@ -238,7 +238,7 @@ class ExactMeasurementProtocol(BaseMeasurementProtocol):
 # ------------------------------------------------------------
 
 class ShotMeasurementProtocol(BaseMeasurementProtocol):
-    def __init__(self, n_shots, n_repeats=1, grouping="qwc"):
+    def __init__(self, n_shots, n_repeats=1, grouping="qwc_fast"):
         super().__init__(grouping=grouping)
         if not isinstance(n_shots, int) or n_shots <= 0:
             raise ValueError("n_shots must be a positive integer.")

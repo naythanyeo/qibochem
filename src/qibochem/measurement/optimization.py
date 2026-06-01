@@ -47,7 +47,6 @@ def check_terms_commutativity(term1: str, term2: str, qubitwise: bool):
     # term1 and term2 have general commutativity iff n_noncommuting_ops is even
     return n_noncommuting_ops % 2 == 0
 
-
 def group_commuting_terms(terms_list, qubitwise):
     """
     Groups the terms in terms_list into as few groups as possible, where all the terms in each group commute
@@ -144,6 +143,134 @@ def qwc_measurements(hamiltonian):
         for term_group in term_groups
     ]
 
+# NEW FUNCTIONS HERE
+
+
+def _qwc_mask(term):
+    """
+    Convert one SymPy Pauli term into bitmasks.
+
+    Input format:
+        term: SymPy Pauli term, e.g. X0*Z2*Y5
+
+    Output format:
+        (x_mask, y_mask, z_mask, weight)
+
+    Bitmask meaning:
+        X0*Z2*Y5 -> x_mask has bit 0, z_mask has bit 2, y_mask has bit 5.
+        weight is the number of measured qubits in the Pauli string.
+    """
+    x_mask = y_mask = z_mask = 0
+    factors = term.args if term.args else (term,)
+
+    for factor in factors:
+        if not isinstance(factor, (X, Y, Z)):
+            continue
+
+        bit = 1 << factor.target_qubit
+        if isinstance(factor, X):
+            x_mask |= bit
+        elif isinstance(factor, Y):
+            y_mask |= bit
+        else:
+            z_mask |= bit
+
+    weight = (x_mask | y_mask | z_mask).bit_count()
+    return x_mask, y_mask, z_mask, weight
+
+
+def _qwc_compatible(group_mask, term_mask):
+    """
+    Check whether a term can be added to a QWC group.
+
+    Input format:
+        group_mask / term_mask: (x_mask, y_mask, z_mask, weight)
+
+    Compatibility rule:
+        A new term cannot introduce a different Pauli basis on any qubit
+        that is already fixed by the group.
+    """
+    group_x, group_y, group_z, _ = group_mask
+    term_x, term_y, term_z, _ = term_mask
+
+    return not (
+        group_x & (term_y | term_z)
+        or group_y & (term_x | term_z)
+        or group_z & (term_x | term_y)
+    )
+
+
+def qwc_fast_measurements(hamiltonian):
+    """
+    Greedily pack Pauli terms into qubitwise-commuting measurement groups.
+
+    Input format:
+        hamiltonian: qibo.hamiltonians.SymbolicHamiltonian
+
+    Internal data format:
+        term_data = [(term, coeff, term_mask), ...]
+        groups = [
+            {
+                "mask": (x_mask, y_mask, z_mask, weight),
+                "terms": [(term, coeff), ...],
+            },
+            ...
+        ]
+
+    Largest-first ordering places longer Pauli strings first, because they
+    constrain the measurement basis most strongly.
+
+    Output format:
+        [(group_expression, measurement_gates), ...]
+    """
+    term_data = [
+        (term, coeff, _qwc_mask(term))
+        for term, coeff in hamiltonian.form.as_coefficients_dict().items()
+        if not isinstance(term, One)
+    ]
+    term_data.sort(key=lambda data: (-data[2][3], str(data[0])))
+
+    groups = []
+    for term, coeff, term_mask in term_data:
+        for group in groups:
+            if _qwc_compatible(group["mask"], term_mask):
+                group_x, group_y, group_z, _ = group["mask"]
+                term_x, term_y, term_z, _ = term_mask
+                x_mask = group_x | term_x
+                y_mask = group_y | term_y
+                z_mask = group_z | term_z
+
+                group["mask"] = (
+                    x_mask,
+                    y_mask,
+                    z_mask,
+                    (x_mask | y_mask | z_mask).bit_count(),
+                )
+                group["terms"].append((term, coeff))
+                break
+        else:
+            groups.append({"mask": term_mask, "terms": [(term, coeff)]})
+
+    result = []
+    for group in groups:
+        x_mask, y_mask, z_mask, _ = group["mask"]
+        basis_mask = x_mask | y_mask | z_mask
+        measurement_gates = []
+
+        for qubit in range(basis_mask.bit_length()):
+            bit = 1 << qubit
+            if x_mask & bit:
+                measurement_gates.append(gates.M(qubit, basis=gates.X))
+            elif y_mask & bit:
+                measurement_gates.append(gates.M(qubit, basis=gates.Y))
+            elif z_mask & bit:
+                measurement_gates.append(gates.M(qubit, basis=gates.Z))
+
+        group_expression = sum(coeff * term for term, coeff in group["terms"])
+        result.append((group_expression, measurement_gates))
+
+    return result
+
 
 def measurement_basis_rotations(hamiltonian, grouping=None):
     """
@@ -154,8 +281,8 @@ def measurement_basis_rotations(hamiltonian, grouping=None):
         hamiltonian (:class:`qibo.hamiltonians.SymbolicHamiltonian`): Hamiltonian of interest
         grouping (str): Whether or not to group Hamiltonian terms together, i.e. use the same set of measurements to get
             the expectation values of a group of terms simultaneously. Default value of ``None`` will not group any
-            terms together, while ``"qwc"`` will group qubitwise commuting terms together, and return the measurement
-            gates associated with each group of terms
+            terms together. ``"qwc"`` uses graph colouring, while ``"qwc_fast"`` uses largest-first greedy QWC basis
+            packing. Both return the measurement gates associated with each group of terms
 
     Returns:
         list: List of two-tuples; the first item in the tuple is a group of Pauli terms (:class:`sympy.Expr`), and the
@@ -171,6 +298,8 @@ def measurement_basis_rotations(hamiltonian, grouping=None):
         ]
     elif grouping == "qwc":
         result += qwc_measurements(hamiltonian)
+    elif grouping == "qwc_fast":
+        result += qwc_fast_measurements(hamiltonian)
     else:
         raise NotImplementedError("Not ready yet!")
     return result

@@ -14,7 +14,7 @@ from qibo import symbols
 from qibo.hamiltonians import SymbolicHamiltonian
 
 from qibochem.driver.hamiltonian import _qubit_hamiltonian, _qubit_to_symbolic_hamiltonian
-from qibochem.selected_ci.utils import assemble_matrix
+from qibochem.selected_ci.utils import assemble_matrix_outputs
 
 """
 GENERAL EXCITATION OPERATORS
@@ -203,7 +203,11 @@ class QSE_Computable:
                 for pauli_string, prefactor in self._map_projected_terms(projected).items():
                     if abs(prefactor) > self.map_threshold:
                         h_map[pauli_string][label] += prefactor
-            self.excitation_map["H"][(i, j)] = h_map
+            # Convert default dict to regular dictionary so pickle can work
+            self.excitation_map["H"][(i, j)] = {
+                pauli_string: dict(label_map)
+                for pauli_string, label_map in h_map.items()
+            }
 
     def _pauli_terms_to_symbolic(self, pauli_terms):
         """
@@ -273,7 +277,17 @@ class QSE_Computable:
                     h_terms[pauli_string] = coeff
             self.h_data[element] = self._pauli_terms_to_symbolic(h_terms)
 
-    
+    def _has_collated_matrix_info(self):
+        """
+        Check whether H/S observables have already been built.
+        """
+        return (
+            self.h_data is not None
+            and self.s_data is not None
+            and all(isinstance(observable, SymbolicHamiltonian) for observable in self.h_data.values())
+            and all(isinstance(observable, SymbolicHamiltonian) for observable in self.s_data.values())
+        )
+
 
     def _collate_hs_matrix_direct(self):
         dim = len(self.operators)
@@ -304,6 +318,8 @@ class QSE_Computable:
         If only single molecule and no caching wanted, then can use direct mode instead
         which will directly compute the H and S matrix from fermionic Hamiltonian
         """
+        if self._has_collated_matrix_info():
+            return
         if self.excitation_map is not None: 
             self.cache_qse_matrix = True
         if self.operators is None:
@@ -326,7 +342,7 @@ class QSE_Computable:
 
 
 
-    def run_qse(self, circuit, protocol) -> tuple[np.ndarray, np.ndarray]:
+    def run_qse(self, circuit, protocol) -> tuple[np.ndarray | dict, np.ndarray | dict]:
         """
         Run the QSE protocol using the given circuit.
 
@@ -336,17 +352,19 @@ class QSE_Computable:
                          it is automatically computed via circuit().state().
 
         Returns:
-            H and S matrices as numpy arrays
+            H and S matrices as arrays, or dictionaries of sampled matrices.
         """
         # First define the excitation operators 
-        self.operators = self.excitation_generator(self.excitation_params)
+        if self.operators is None:
+            self.operators = self.excitation_generator(self.excitation_params)
 
         # Update the H and S observables  
-        self.collate_hs_matrix_info()
+        if not self._has_collated_matrix_info():
+            self.collate_hs_matrix_info()
         H_values = protocol.evaluate(circuit, self.h_data)
         S_values = protocol.evaluate(circuit, self.s_data)
 
-        H = assemble_matrix(H_values)
-        S = assemble_matrix(S_values)
+        H = assemble_matrix_outputs(H_values)
+        S = assemble_matrix_outputs(S_values)
 
         return H, S

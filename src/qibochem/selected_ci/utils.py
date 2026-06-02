@@ -1,4 +1,6 @@
 """GENERAL HELPER FUNCTIONS"""
+from collections.abc import Mapping
+
 import numpy as np
 from numpy import linalg as la
 
@@ -19,6 +21,20 @@ def assemble_matrix(values, dim=None):
                 if i != j:
                         matrix[j, i] = np.conj(value)
         return matrix
+
+
+def assemble_matrix_outputs(values, dim=None):
+        """Assemble either one matrix or sampled matrices from protocol output."""
+        if not isinstance(values, Mapping):
+                raise TypeError("values must be a mapping.")
+
+        if all(isinstance(key, tuple) and len(key) == 2 for key in values):
+                return assemble_matrix(values, dim=dim)
+
+        return {
+                sample_key: assemble_matrix(sample_values, dim=dim)
+                for sample_key, sample_values in values.items()
+        }
 
 
 def solve_generalised_eigeneqn(S, H, threshold=1e-6):
@@ -54,10 +70,3 @@ def solve_generalised_eigeneqn(S, H, threshold=1e-6):
         eigenvectors = s_inv_half @ c_prime
 
         return eigenvalues, eigenvectors, len(s_evals)
-
-
-
-
-"""FUNCTINO FOR BOOTSTRAP SAMPLING PROTOCOL HERE
-READ IN H AND S SAMPLES and a LIST OF SAMPLE VALUES
-OUTPUT BOOTSTRAPPED MATRICES"""

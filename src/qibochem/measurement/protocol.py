@@ -34,9 +34,12 @@ import re
 from collections import defaultdict
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import reduce
+from math import ceil, gcd
 import numpy as np
 import qibo
 from qibo import Circuit
+from scipy.stats import multinomial
 from qibochem.measurement.optimization import measurement_basis_rotations, group_commuting_terms
 from qibochem.measurement.result import constant_term, expectation_from_samples, v_expectation
 from qibochem.measurement.shot_allocation import allocate_shots
@@ -238,33 +241,80 @@ class ExactMeasurementProtocol(BaseMeasurementProtocol):
 # ------------------------------------------------------------
 
 class ShotMeasurementProtocol(BaseMeasurementProtocol):
-    def __init__(self, n_shots, n_repeats=1, grouping="qwc_fast"):
+    """
+    Base Shot Measurement Protocol that just samples shot probabilities 
+    This first does grouping and rotation, then sample with qibo backend from the
+    exact probabilities vector -> sample probabilities vector -> expectation value
+    This base protocol is for 1 shot, built for subclassing for other shot protocols
+    For bootstrap / multi shot / adaptive / shot allocations, they can be subclassed 
+    from this base protocol and added on on top of this
+    """
+    def __init__(self, n_shots=None, t_shots=None, n_repeats=1, grouping="qwc_fast"):
         super().__init__(grouping=grouping)
-        if not isinstance(n_shots, int) or n_shots <= 0:
+        if n_shots is None and t_shots is None:
+            raise ValueError("Specify either n_shots or t_shots.")
+        if isinstance(n_shots, int) and n_shots <= 0:
             raise ValueError("n_shots must be a positive integer.")
+        if isinstance(n_shots, dict):
+            if not all(isinstance(value, int) and value > 0 for value in n_shots.values()):
+                raise ValueError("n_shots dictionary values must be positive integers.")
+        elif n_shots is not None and not isinstance(n_shots, int):
+            raise TypeError("n_shots must be an integer, dictionary, or None.")
+        if t_shots is not None and (not isinstance(t_shots, int) or t_shots <= 0):
+            raise ValueError("t_shots must be a positive integer.")
         if not isinstance(n_repeats, int) or n_repeats <= 0:
             raise ValueError("n_repeats must be a positive integer.")
         self.n_shots = n_shots
+        self.t_shots = t_shots
         self.n_repeats = n_repeats
+        self.observable_shots = None
         self.backend = qibo.get_backend()
 
     def _get_shot_allocation(self):
         """
-        For regular shots for now assume regular distribution of shots 
+        n_shots means shots per observable. t_shots means total shots across observables.
+        Within each observable, shots are distributed uniformly across its commuting groups.
         """
-        group_labels = [(observable_key, group_expression)
-                        for observable_key, groups in self.observable_shot_groupings.items()
-                        for group_expression in groups]
-        base_shots = self.n_shots // len(group_labels)
-        remainder = self.n_shots % len(group_labels)
-        if base_shots == 0:
-            raise ValueError("n_shots must be at least the number of observable groups.")
-        # Define shot allocation for each key 
+        observable_keys = list(self.observable_shot_groupings)
+        # If n_shots is manually specified as dictionary, use it directly
+        if isinstance(self.n_shots, dict):
+            if set(self.n_shots) != set(observable_keys):
+                raise ValueError("n_shots dictionary keys must match observable keys.")
+            self.observable_shots = dict(self.n_shots)
+            # Check that the total shots match (if both are specified)
+            if self.t_shots is not None and sum(self.observable_shots.values()) != self.t_shots:
+                raise ValueError("n_shots values must sum to t_shots.")
+            self.t_shots = sum(self.observable_shots.values())
+        # If n_shots is specified as integer, the allocate it uniformly across observables
+        elif isinstance(self.n_shots, int):
+            self.observable_shots = {observable_key: self.n_shots for observable_key in observable_keys}
+            expected_total = self.n_shots * len(observable_keys)
+            # If t_shots is also specified, check that they match
+            if self.t_shots is not None and self.t_shots != expected_total:
+                raise ValueError("t_shots must match n_shots times number of observables.")
+            self.t_shots = expected_total
+        # It t_shots instead is specified, then allocate as uniformly as possible
+        else:
+            base_shots = self.t_shots // len(observable_keys)
+            remainder = self.t_shots % len(observable_keys)
+            if base_shots == 0:
+                raise ValueError("t_shots must be at least the number of observables.")
+            self.observable_shots = {
+                observable_key: base_shots + int(index < remainder)
+                for index, observable_key in enumerate(observable_keys)
+            }
+        # Now allocate shots across commuting groups within each observable
+        # TBC can implement other shot allocation here with functions
         self.shot_allocation = defaultdict(dict)
-        for index, (observable_key, group_expression) in enumerate(group_labels):
-            self.shot_allocation[observable_key][group_expression] = (
-                base_shots + int(index < remainder)
-            )
+        for observable_key, groups in self.observable_shot_groupings.items():
+            group_expressions = list(groups)
+            observable_budget = self.observable_shots[observable_key]
+            base_shots = observable_budget // len(group_expressions)
+            remainder = observable_budget % len(group_expressions)
+            if base_shots == 0:
+                raise ValueError("Each observable needs at least one shot per commuting group.")
+            for index, group_expression in enumerate(group_expressions):
+                self.shot_allocation[observable_key][group_expression] = base_shots + int(index < remainder)
 
     def _sample_probabilities(self, exact_probabilities, observable_key, group_expression) -> dict:
         """
@@ -287,28 +337,148 @@ class ShotMeasurementProtocol(BaseMeasurementProtocol):
 
 
 # ------------------------------------------------------------
+# MultiShotProtocol
+# ------------------------------------------------------------
+
+class MultiShotProtocol(BaseMeasurementProtocol):
+    """
+    Multi-shot protocol that samples probailities for multiple shot sizes at once 
+    This will save the grouping and rotation overhead cost. Might be better compared
+    to bootstrap protocol depending on sample size. 
+    
+    """
+    def __init__(
+        self,
+        sample_sizes=(1000, 10000, 20000, 50000, 100000),
+        n_repeats=10,
+        grouping="qwc_fast",
+    ):
+        super().__init__(grouping=grouping)
+        if not sample_sizes:
+            raise ValueError("sample_sizes cannot be empty.")
+        if not all(isinstance(sample_size, int) and sample_size > 0 for sample_size in sample_sizes):
+            raise ValueError("sample_sizes must contain positive integers.")
+        if not isinstance(n_repeats, int) or n_repeats <= 0:
+            raise ValueError("n_repeats must be a positive integer.")
+
+        self.sample_sizes = tuple(sample_sizes)
+        self.n_repeats = n_repeats
+        self.backend = qibo.get_backend()
+        self.shot_allocation = None
+
+    def _get_shot_allocation(self):
+        """
+        sample_sizes are shots per observable.
+        Within each observable, every sample size is split uniformly across groups.
+        """
+        self.shot_allocation = defaultdict(dict)
+        for observable_key, groups in self.observable_shot_groupings.items():
+            group_expressions = list(groups)
+            for sample_size in self.sample_sizes:
+                base_shots = sample_size // len(group_expressions)
+                remainder = sample_size % len(group_expressions)
+                if base_shots == 0:
+                    raise ValueError("Each sample size needs at least one shot per commuting group.")
+                for index, group_expression in enumerate(group_expressions):
+                    self.shot_allocation[observable_key].setdefault(group_expression, {})
+                    self.shot_allocation[observable_key][group_expression][sample_size] = (
+                        base_shots + int(index < remainder)
+                    )
+    def _sample_probabilities(self, exact_probabilities, observable_key, group_expression) -> dict:
+        sampled_probabilities = {}
+        for sample_size in self.sample_sizes:
+            group_shots = self.shot_allocation[observable_key][group_expression][sample_size]
+            for repeat in range(self.n_repeats):
+                frequencies = self.backend.sample_frequencies(exact_probabilities, group_shots)
+                probability_vector = np.zeros_like(exact_probabilities)
+                for basis_index, count in frequencies.items():
+                    probability_vector[basis_index] = count / group_shots
+                sampled_probabilities[f"shots_{sample_size}_{repeat}"] = probability_vector
+        return sampled_probabilities
+
+
+# ------------------------------------------------------------
 # BootstrapMeasurementProtocol
 # ------------------------------------------------------------
-# Bootstrap-style protocol.
-# Generates repeated sampled estimates for multiple shot/sample sizes.
 
 class BootstrapMeasurementProtocol(BaseMeasurementProtocol):
-    def __init__(self, sample_sizes, n_resamples, seed=None):
-        # Input:
-        #   sample_sizes: list[int], e.g. [1000, 10000, 50000]
-        #   n_resamples: number of estimates per sample size
-        #   seed: optional RNG seed
-        # Output: protocol instance
-        # Description:
-        #   Stores bootstrap sampling configuration.
-        pass
+    """
+    Boostrap protocol for sampling probabilities. This is useful if many many samples are
+    required, and minimum sample size is large (so total number of bootstrap samples is small)
+    It first samples the highest common factor shot value multiple times, then bootstrap
+    from that set of samples. Eg to get 10k shots, it will pick 10 samples of 1k shots and 
+    average them. However, this protocol might be slower than multi-shot protocol because
+    there is significant overhead when calling backend.sample_frequencies. And sampling 100k
+    shots for eg won't necesarrily be 100 times slower than sampling 1k shots because this is
+    reconstructed by probabilities rather than actual samples. 
+    So if the sample pattern is something like: 10k, 50k, 100k, 200k, 300k, 500k, 750k, 1M 
+    Then maximum only got 100 samples (1M / 10k) so it could be beneficial 
+    But if the shot pattern is closer to something like: 100, 1k, 10k, 100k, 1M
+    Then we end up with 10k samples which is probably slower than just using multi-shot
+    """
+    def __init__(
+        self,
+        sample_sizes=(1000, 10000, 20000, 50000, 100000),
+        n_resamples=10,
+        pool_shots=None,
+        grouping="qwc_fast",
+    ):
+        super().__init__(grouping=grouping)
+        if not sample_sizes:
+            raise ValueError("sample_sizes cannot be empty.")
+        if not all(isinstance(sample_size, int) and sample_size > 0 for sample_size in sample_sizes):
+            raise ValueError("sample_sizes must contain positive integers.")
+        if not isinstance(n_resamples, int) or n_resamples <= 0:
+            raise ValueError("n_resamples must be a positive integer.")
+        if pool_shots is not None and (not isinstance(pool_shots, int) or pool_shots <= 0):
+            raise ValueError("pool_shots must be a positive integer.")
 
-    def _sample_probabilities(self, exact_probabilities) -> dict:
-        # Input:
-        #   exact_probabilities: exact probability vector for one group
-        #   group_expression: commuting group terms
-        # Output:
-        #   {sample_size: [group_expectation_1, group_expectation_2, ...]}
-        # Description:
-        #   For each sample size, draws n_resamples multinomial samples and reconstructs group expectations.
-        pass
+        self.sample_sizes = tuple(sample_sizes)
+        self.n_resamples = n_resamples
+        self.sample_shots = reduce(gcd, self.sample_sizes)
+        if self.sample_shots <= 0:
+            raise ValueError("sample_shots must be positive.")
+        if not all(sample_size % self.sample_shots == 0 for sample_size in self.sample_sizes):
+            raise ValueError("All sample sizes must be divisible by sample_shots.")
+
+        initial_pool_shots = max(self.sample_sizes) * n_resamples if pool_shots is None else pool_shots
+        self.total_samples = ceil(initial_pool_shots / self.sample_shots)
+        self.pool_shots = self.total_samples * self.sample_shots
+        self.shot_allocation = None
+        self.backend = qibo.get_backend()
+
+    def _get_shot_allocation(self):
+        """
+        sample_shots is the number of shots in one pool vector per observable.
+        Within each observable, sample_shots is distributed uniformly across groups.
+        """
+        self.shot_allocation = defaultdict(dict)
+
+        for observable_key, groups in self.observable_shot_groupings.items():
+            group_expressions = list(groups)
+            base_shots = self.sample_shots // len(group_expressions)
+            remainder = self.sample_shots % len(group_expressions)
+            if base_shots == 0:
+                raise ValueError("sample_shots must provide at least one shot per commuting group.")
+            for index, group_expression in enumerate(group_expressions):
+                self.shot_allocation[observable_key][group_expression] = base_shots + int(index < remainder)
+
+    def _sample_probabilities(self, exact_probabilities, observable_key, group_expression) -> dict:
+        group_block_shots = self.shot_allocation[observable_key][group_expression]
+        pool_vectors = np.zeros((self.total_samples, len(exact_probabilities)))
+
+        for pool_index in range(self.total_samples):
+            frequencies = self.backend.sample_frequencies(exact_probabilities, group_block_shots)
+            for basis_index, count in frequencies.items():
+                pool_vectors[pool_index, basis_index] = count / group_block_shots
+
+        sampled_probabilities = {}
+        pool_probabilities = np.full(self.total_samples, 1 / self.total_samples)
+
+        for sample_size in self.sample_sizes:
+            n_blocks = sample_size // self.sample_shots
+            for resample in range(self.n_resamples):
+                weights = multinomial.rvs(n_blocks, pool_probabilities)
+                sampled_probabilities[f"shots_{sample_size}_{resample}"] = weights @ pool_vectors / n_blocks
+
+        return sampled_probabilities

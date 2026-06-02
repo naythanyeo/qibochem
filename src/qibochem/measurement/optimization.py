@@ -3,6 +3,7 @@ Functions for optimising the measurement cost of obtaining the expectation value
 """
 
 import networkx as nx
+import sympy as sp
 from qibo import gates
 from qibo.symbols import X, Y, Z
 from sympy.core.numbers import One
@@ -143,7 +144,11 @@ def qwc_measurements(hamiltonian):
         for term_group in term_groups
     ]
 
-# NEW FUNCTIONS HERE
+"""
+New function for fast commuting grouping 
+the previous method of creating graphs can probably find optimal solution but currently 
+it also does greedy colouring which is also not optimal, and a lot slower 
+"""
 
 
 def _qwc_mask(term):
@@ -266,7 +271,7 @@ def qwc_fast_measurements(hamiltonian):
             elif z_mask & bit:
                 measurement_gates.append(gates.M(qubit, basis=gates.Z))
 
-        group_expression = sum(coeff * term for term, coeff in group["terms"])
+        group_expression = sp.Add(*(coeff * term for term, coeff in group["terms"]))
         result.append((group_expression, measurement_gates))
 
     return result

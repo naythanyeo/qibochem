@@ -73,7 +73,11 @@ class BaseMeasurementProtocol:
     grouping: str = "qwc_fast"
     """
     Base measurement class for measurements with rotation
-    After initialised, circuit with final_state can be re run to save overhead cost
+    This first does grouping and rotation, then sample with qibo backend from the
+    exact probabilities vector -> sample probabilities vector -> expectation value
+    This base protocol is for 1 shot, built for subclassing for other shot protocols
+    For bootstrap / multi shot / adaptive / shot allocations, they can be subclassed 
+    from this base protocol and added on on top of this
     """
     def evaluate(self, circuit, observables) -> dict:
         """
@@ -243,11 +247,7 @@ class ExactMeasurementProtocol(BaseMeasurementProtocol):
 class ShotMeasurementProtocol(BaseMeasurementProtocol):
     """
     Base Shot Measurement Protocol that just samples shot probabilities 
-    This first does grouping and rotation, then sample with qibo backend from the
-    exact probabilities vector -> sample probabilities vector -> expectation value
-    This base protocol is for 1 shot, built for subclassing for other shot protocols
-    For bootstrap / multi shot / adaptive / shot allocations, they can be subclassed 
-    from this base protocol and added on on top of this
+    for one shot size. Most basic shot protocol.
     """
     def __init__(self, n_shots=None, t_shots=None, n_repeats=1, grouping="qwc_fast"):
         super().__init__(grouping=grouping)

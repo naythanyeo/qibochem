@@ -38,11 +38,11 @@ from functools import reduce
 from math import ceil, gcd
 import numpy as np
 import qibo
+import sympy as sp
 from qibo import Circuit
 from scipy.stats import multinomial
-from qibochem.measurement.optimization import measurement_basis_rotations, group_commuting_terms
-from qibochem.measurement.result import constant_term, expectation_from_samples, v_expectation
-from qibochem.measurement.shot_allocation import allocate_shots
+from qibochem.measurement.optimization import measurement_basis_rotations
+from qibochem.measurement.result import constant_term
 
 @dataclass
 class StateVectorProtocol:
@@ -57,9 +57,10 @@ class StateVectorProtocol:
         if observables is None:
             raise ValueError("Specifify observables to evaluate")
 
+        # For single observables just return
         if not isinstance(observables, Mapping):
             return observables.expectation(circuit)
-
+        # If you want to evaluate each observable separately 
         return {
             key: observable.expectation(circuit)
             for key, observable in observables.items()
@@ -71,6 +72,7 @@ class StateVectorProtocol:
 @dataclass
 class BaseMeasurementProtocol:
     grouping: str = "qwc_fast"
+    shot_distribution: str = "uniform"
     """
     Base measurement class for measurements with rotation
     This first does grouping and rotation, then sample with qibo backend from the
@@ -86,9 +88,9 @@ class BaseMeasurementProtocol:
         Requires subclass to define the sampling method to read in probabilities 
         Rough process
         1) Check if circuit.final_state exist, if not run it
-        2) loop through every observable term 
-        3) for every observable, group commuting terms 
-        4) For every group, 
+        2) collect every observable term and group all terms globally
+        3) reconstruct each observable from the globally sampled groups
+        4) For every group,
         - rotate final state into measurement basis
         - compute exact probabilities 
         - pass into subclass sampling method called _sample_groups 
@@ -99,6 +101,11 @@ class BaseMeasurementProtocol:
         8) reorder the nested dictionaries 
         """
 
+        if circuit is None:
+            raise ValueError("Specify a circuit to evaluate.")
+        if observables is None:
+            raise ValueError("Specify observables to evaluate.")
+
         if circuit._final_state is None: # Re-run circuit only if it has not been run yet
             circuit()
         final_state = circuit._final_state.state()
@@ -108,37 +115,109 @@ class BaseMeasurementProtocol:
         # Handles single input observables 
         if not isinstance(observables, Mapping):
             observables = {"O1": observables}
-        # Loops through all the observables once first to store the commuting groups
-        # This dictionary will be used to assign and allocate shots 
-        self.observable_shot_groupings = defaultdict(dict)
-        for observable_key, observable in observables.items():
-            grouped_terms = measurement_basis_rotations(observable, grouping=self.grouping)
-            for group_expression, measurement_gates in grouped_terms:
-                self.observable_shot_groupings[observable_key][group_expression] = measurement_gates
-        # Subsequent implementations of adaptive or allocated shots use this attribute 
-        # Function defined in the subclass to assign shot allocations to each observable 
+        # Global terms is a list of unique term values (strings)
+        global_terms, observable_terms = self._collect_global_terms(observables)
+        # Groups all the commuting terms, in this case self.grouping by default is qwc_fast
+        self.grouped_terms = measurement_basis_rotations(global_terms, grouping=self.grouping)
+        # grouped_terms is: (group_expression, measurement gates)... 
+        # Each group_expression is all the possible observables that exist
+        self.observable_group_expressions = self._build_observable_group_expressions(
+            observable_terms,
+            self.grouped_terms,
+        )
         self._get_shot_allocation()
-        # After this loop through the data again
-        full_observables_data = defaultdict(dict)
-        for observable_key, observable_data in self.observable_shot_groupings.items():
-            sample_observable_expectations = defaultdict(float)
-            for group_expression, measurement_gates in observable_data.items():
-                rotated_final_state = self._rotate_final_state(measurement_gates, final_state)
-                exact_probabilities = np.abs(rotated_final_state) ** 2
-                # From the exact_probabilities, do the sampling here
-                # Sampled_probabilities is a dictionary with keys for different samples
-                # Within sampled_probabilities, this will use observable_key and group_expressino as
-                # keys in shot_allocation to determine the shots used to sample 
-                sampled_probabilities = self._sample_probabilities(exact_probabilities,
-                                                                   observable_key,
-                                                                   group_expression)
-                for sampling_key, probability_vector in sampled_probabilities.items():
-                    expectation_value = self._probabilities2expectation(probability_vector, group_expression)
-                    sample_observable_expectations[sampling_key] += expectation_value
-            for sampling_key in sample_observable_expectations:
-                sample_observable_expectations[sampling_key] += constant_term(observables[observable_key])
-            full_observables_data[observable_key] = sample_observable_expectations
+        sampled_group_probabilities = self._sample_all_groups(final_state)
+        full_observables_data = self._reconstruct_observables(observables, sampled_group_probabilities)
         return self._format_output(full_observables_data)
+
+    def _collect_global_terms(self, observables):
+        """
+        Collect all nonconstant terms for global grouping, and retain the
+        observable-specific coefficients for later reconstruction.
+        """
+        observable_terms = defaultdict(dict)
+        unique_terms = {}
+
+        for observable_key, observable in observables.items():
+            # observables: (X0*Y1 .. , 0.5)
+            for term, coeff in observable.form.as_coefficients_dict().items():
+                if term == 1:
+                    continue
+                term_key = str(term)
+                unique_terms.setdefault(term_key, (term, 1.0)) # Only add the new unique terms
+                observable_terms[observable_key][term_key] = (term, coeff)
+
+        return list(unique_terms.values()), observable_terms
+
+    @staticmethod
+    def _build_observable_group_expressions(observable_terms, grouped_terms):
+        """
+        For every global commuting group, rebuild only the terms that belong to
+        each observable, with that observable's original coefficients.
+        """
+        observable_group_expressions = defaultdict(dict)
+
+        for group_expression, _ in grouped_terms:
+            group_terms = {
+                str(term): term
+                for term in group_expression.as_coefficients_dict()
+                if term != 1
+            }
+            for observable_key, terms in observable_terms.items():
+                observable_specific_terms = [
+                    terms[term_key][1] * term
+                    for term_key, term in group_terms.items()
+                    if term_key in terms
+                ]
+                if observable_specific_terms:
+                    observable_group_expressions[observable_key][group_expression] = (
+                        sp.Add(*observable_specific_terms)
+                    )
+
+        return observable_group_expressions
+
+    def _sample_all_groups(self, final_state):
+        """
+        Rotate and sample every global commuting group once.
+        """
+        sampled_group_probabilities = {}
+        for group_expression, measurement_gates in self.grouped_terms:
+            rotated_final_state = self._rotate_final_state(measurement_gates, final_state)
+            exact_probabilities = np.abs(rotated_final_state) ** 2
+            sampled_group_probabilities[group_expression] = self._sample_probabilities(
+                exact_probabilities,
+                group_expression,
+            )
+        return sampled_group_probabilities
+
+    def _reconstruct_observables(self, observables, sampled_group_probabilities):
+        """
+        Reconstruct every observable from the shared sampled group probabilities.
+        """
+        sample_keys = {
+            sample_key
+            for sampled_probabilities in sampled_group_probabilities.values()
+            for sample_key in sampled_probabilities
+        }
+        if not sample_keys:
+            sample_keys = {"constant"}
+
+        full_observables_data = defaultdict(dict)
+        for observable_key, observable in observables.items():
+            sample_observable_expectations = defaultdict(float)
+            for global_group_expression, observable_expression in self.observable_group_expressions[observable_key].items():
+                sampled_probabilities = sampled_group_probabilities[global_group_expression]
+                for sampling_key, probability_vector in sampled_probabilities.items():
+                    expectation_value = self._probabilities2expectation(
+                        probability_vector,
+                        observable_expression,
+                    )
+                    sample_observable_expectations[sampling_key] += expectation_value
+            for sampling_key in sample_keys:
+                sample_observable_expectations[sampling_key] += constant_term(observable)
+            full_observables_data[observable_key] = sample_observable_expectations
+
+        return full_observables_data
 
     def _rotate_final_state(self, measurement_gates, final_state):
         """
@@ -154,14 +233,13 @@ class BaseMeasurementProtocol:
         """
         By default, no shots will be allocated (for exact measurement can use this)
         Else the shot_allocation can be defined in each subclass 
-        It will use self.observable_shot_groupings to determine shots allocated
-        to each observable / group based on unique protocol requirements 
+        It will use self.grouped_terms to determine shots allocated to each group
+        based on unique protocol requirements
         Returns an attribute self.shot_allocation --> used by sample_probabilities
-        Shot allocation will be a dictionary: shot_allocation[observable_key][group_expression]
         """
         self.shot_allocation = None
 
-    def _sample_probabilities(self, exact_probabilities, observable_key, group_expression):
+    def _sample_probabilities(self, exact_probabilities, group_expression):
         """
         Defined at a subclass level for how to sample the probabilities
         """
@@ -236,7 +314,7 @@ class ExactMeasurementProtocol(BaseMeasurementProtocol):
     in the X or Y basis without rotation. 
     This should in theory be slightly slower than statevector because of that
     """
-    def _sample_probabilities(self, exact_probabilities, observable_key, group_expression):
+    def _sample_probabilities(self, exact_probabilities, group_expression):
         return {"SV": exact_probabilities}
 
 
@@ -249,79 +327,65 @@ class ShotMeasurementProtocol(BaseMeasurementProtocol):
     Base Shot Measurement Protocol that just samples shot probabilities 
     for one shot size. Most basic shot protocol.
     """
-    def __init__(self, n_shots=None, t_shots=None, n_repeats=1, grouping="qwc_fast"):
-        super().__init__(grouping=grouping)
+    def __init__(
+        self,
+        n_shots=None,
+        t_shots=None,
+        n_repeats=1,
+        grouping="qwc_fast",
+        shot_distribution="uniform",
+    ):
+        super().__init__(grouping=grouping, shot_distribution=shot_distribution)
         if n_shots is None and t_shots is None:
             raise ValueError("Specify either n_shots or t_shots.")
         if isinstance(n_shots, int) and n_shots <= 0:
             raise ValueError("n_shots must be a positive integer.")
         if isinstance(n_shots, dict):
-            if not all(isinstance(value, int) and value > 0 for value in n_shots.values()):
-                raise ValueError("n_shots dictionary values must be positive integers.")
+            raise TypeError("n_shots dictionaries are not supported. Use n_shots or t_shots across commuting groups.")
         elif n_shots is not None and not isinstance(n_shots, int):
-            raise TypeError("n_shots must be an integer, dictionary, or None.")
+            raise TypeError("n_shots must be an integer or None.")
         if t_shots is not None and (not isinstance(t_shots, int) or t_shots <= 0):
             raise ValueError("t_shots must be a positive integer.")
         if not isinstance(n_repeats, int) or n_repeats <= 0:
             raise ValueError("n_repeats must be a positive integer.")
+        if shot_distribution != "uniform":
+            raise NotImplementedError("Only uniform shot distribution is supported for now.")
         self.n_shots = n_shots
         self.t_shots = t_shots
         self.n_repeats = n_repeats
-        self.observable_shots = None
         self.backend = qibo.get_backend()
 
     def _get_shot_allocation(self):
         """
-        n_shots means shots per observable. t_shots means total shots across observables.
-        Within each observable, shots are distributed uniformly across its commuting groups.
+        n_shots means shots per commuting group.
+        t_shots means total shots distributed uniformly across commuting groups.
         """
-        observable_keys = list(self.observable_shot_groupings)
-        # If n_shots is manually specified as dictionary, use it directly
-        if isinstance(self.n_shots, dict):
-            if set(self.n_shots) != set(observable_keys):
-                raise ValueError("n_shots dictionary keys must match observable keys.")
-            self.observable_shots = dict(self.n_shots)
-            # Check that the total shots match (if both are specified)
-            if self.t_shots is not None and sum(self.observable_shots.values()) != self.t_shots:
-                raise ValueError("n_shots values must sum to t_shots.")
-            self.t_shots = sum(self.observable_shots.values())
-        # If n_shots is specified as integer, the allocate it uniformly across observables
-        elif isinstance(self.n_shots, int):
-            self.observable_shots = {observable_key: self.n_shots for observable_key in observable_keys}
-            expected_total = self.n_shots * len(observable_keys)
-            # If t_shots is also specified, check that they match
-            if self.t_shots is not None and self.t_shots != expected_total:
-                raise ValueError("t_shots must match n_shots times number of observables.")
-            self.t_shots = expected_total
-        # It t_shots instead is specified, then allocate as uniformly as possible
-        else:
-            base_shots = self.t_shots // len(observable_keys)
-            remainder = self.t_shots % len(observable_keys)
-            if base_shots == 0:
-                raise ValueError("t_shots must be at least the number of observables.")
-            self.observable_shots = {
-                observable_key: base_shots + int(index < remainder)
-                for index, observable_key in enumerate(observable_keys)
-            }
-        # Now allocate shots across commuting groups within each observable
-        # TBC can implement other shot allocation here with functions
-        self.shot_allocation = defaultdict(dict)
-        for observable_key, groups in self.observable_shot_groupings.items():
-            group_expressions = list(groups)
-            observable_budget = self.observable_shots[observable_key]
-            base_shots = observable_budget // len(group_expressions)
-            remainder = observable_budget % len(group_expressions)
-            if base_shots == 0:
-                raise ValueError("Each observable needs at least one shot per commuting group.")
-            for index, group_expression in enumerate(group_expressions):
-                self.shot_allocation[observable_key][group_expression] = base_shots + int(index < remainder)
+        group_expressions = [group_expression for group_expression, _ in self.grouped_terms]
+        self.shot_allocation = {}
+        if not group_expressions:
+            return
 
-    def _sample_probabilities(self, exact_probabilities, observable_key, group_expression) -> dict:
+        if isinstance(self.n_shots, int):
+            expected_total = self.n_shots * len(group_expressions)
+            if self.t_shots is not None and self.t_shots != expected_total:
+                raise ValueError("t_shots must match n_shots times number of commuting groups.")
+            for group_expression in group_expressions:
+                self.shot_allocation[group_expression] = self.n_shots
+            return
+
+        base_shots = self.t_shots // len(group_expressions)
+        remainder = self.t_shots % len(group_expressions)
+        if base_shots == 0:
+            raise ValueError("t_shots must be at least the number of commuting groups.")
+        for index, group_expression in enumerate(group_expressions):
+            self.shot_allocation[group_expression] = base_shots + int(index < remainder)
+
+    def _sample_probabilities(self, exact_probabilities, group_expression) -> dict:
         """
         Samples the exact_probabilities with qibo backend
         n_repeats is the number of samples wanted 
         """
-        n_shots = self.shot_allocation[observable_key][group_expression]
+        n_shots = self.shot_allocation[group_expression]
         sampled_probabilities = {}
 
         for repeat in range(self.n_repeats):
@@ -329,7 +393,7 @@ class ShotMeasurementProtocol(BaseMeasurementProtocol):
 
             probability_vector = np.zeros_like(exact_probabilities)
             for basis_index, count in frequencies.items():
-                probability_vector[basis_index] = count / n_shots
+                probability_vector[int(basis_index)] = count / n_shots
 
             sampled_probabilities[f"shots_{repeat}"] = probability_vector
 
@@ -352,14 +416,17 @@ class MultiShotProtocol(BaseMeasurementProtocol):
         sample_sizes=(1000, 10000, 20000, 50000, 100000),
         n_repeats=10,
         grouping="qwc_fast",
+        shot_distribution="uniform",
     ):
-        super().__init__(grouping=grouping)
+        super().__init__(grouping=grouping, shot_distribution=shot_distribution)
         if not sample_sizes:
             raise ValueError("sample_sizes cannot be empty.")
         if not all(isinstance(sample_size, int) and sample_size > 0 for sample_size in sample_sizes):
             raise ValueError("sample_sizes must contain positive integers.")
         if not isinstance(n_repeats, int) or n_repeats <= 0:
             raise ValueError("n_repeats must be a positive integer.")
+        if shot_distribution != "uniform":
+            raise NotImplementedError("Only uniform shot distribution is supported for now.")
 
         self.sample_sizes = tuple(sample_sizes)
         self.n_repeats = n_repeats
@@ -368,31 +435,22 @@ class MultiShotProtocol(BaseMeasurementProtocol):
 
     def _get_shot_allocation(self):
         """
-        sample_sizes are shots per observable.
-        Within each observable, every sample size is split uniformly across groups.
+        sample_sizes are shots per commuting group.
         """
         self.shot_allocation = defaultdict(dict)
-        for observable_key, groups in self.observable_shot_groupings.items():
-            group_expressions = list(groups)
+        for group_expression, _ in self.grouped_terms:
             for sample_size in self.sample_sizes:
-                base_shots = sample_size // len(group_expressions)
-                remainder = sample_size % len(group_expressions)
-                if base_shots == 0:
-                    raise ValueError("Each sample size needs at least one shot per commuting group.")
-                for index, group_expression in enumerate(group_expressions):
-                    self.shot_allocation[observable_key].setdefault(group_expression, {})
-                    self.shot_allocation[observable_key][group_expression][sample_size] = (
-                        base_shots + int(index < remainder)
-                    )
-    def _sample_probabilities(self, exact_probabilities, observable_key, group_expression) -> dict:
+                self.shot_allocation[group_expression][sample_size] = sample_size
+
+    def _sample_probabilities(self, exact_probabilities, group_expression) -> dict:
         sampled_probabilities = {}
         for sample_size in self.sample_sizes:
-            group_shots = self.shot_allocation[observable_key][group_expression][sample_size]
+            group_shots = self.shot_allocation[group_expression][sample_size]
             for repeat in range(self.n_repeats):
                 frequencies = self.backend.sample_frequencies(exact_probabilities, group_shots)
                 probability_vector = np.zeros_like(exact_probabilities)
                 for basis_index, count in frequencies.items():
-                    probability_vector[basis_index] = count / group_shots
+                    probability_vector[int(basis_index)] = count / group_shots
                 sampled_probabilities[f"shots_{sample_size}_{repeat}"] = probability_vector
         return sampled_probabilities
 
@@ -422,8 +480,9 @@ class BootstrapMeasurementProtocol(BaseMeasurementProtocol):
         n_resamples=10,
         pool_shots=None,
         grouping="qwc_fast",
+        shot_distribution="uniform",
     ):
-        super().__init__(grouping=grouping)
+        super().__init__(grouping=grouping, shot_distribution=shot_distribution)
         if not sample_sizes:
             raise ValueError("sample_sizes cannot be empty.")
         if not all(isinstance(sample_size, int) and sample_size > 0 for sample_size in sample_sizes):
@@ -432,6 +491,8 @@ class BootstrapMeasurementProtocol(BaseMeasurementProtocol):
             raise ValueError("n_resamples must be a positive integer.")
         if pool_shots is not None and (not isinstance(pool_shots, int) or pool_shots <= 0):
             raise ValueError("pool_shots must be a positive integer.")
+        if shot_distribution != "uniform":
+            raise NotImplementedError("Only uniform shot distribution is supported for now.")
 
         self.sample_sizes = tuple(sample_sizes)
         self.n_resamples = n_resamples
@@ -449,28 +510,20 @@ class BootstrapMeasurementProtocol(BaseMeasurementProtocol):
 
     def _get_shot_allocation(self):
         """
-        sample_shots is the number of shots in one pool vector per observable.
-        Within each observable, sample_shots is distributed uniformly across groups.
+        sample_shots is the number of shots in one pool vector per commuting group.
         """
-        self.shot_allocation = defaultdict(dict)
+        self.shot_allocation = {}
+        for group_expression, _ in self.grouped_terms:
+            self.shot_allocation[group_expression] = self.sample_shots
 
-        for observable_key, groups in self.observable_shot_groupings.items():
-            group_expressions = list(groups)
-            base_shots = self.sample_shots // len(group_expressions)
-            remainder = self.sample_shots % len(group_expressions)
-            if base_shots == 0:
-                raise ValueError("sample_shots must provide at least one shot per commuting group.")
-            for index, group_expression in enumerate(group_expressions):
-                self.shot_allocation[observable_key][group_expression] = base_shots + int(index < remainder)
-
-    def _sample_probabilities(self, exact_probabilities, observable_key, group_expression) -> dict:
-        group_block_shots = self.shot_allocation[observable_key][group_expression]
+    def _sample_probabilities(self, exact_probabilities, group_expression) -> dict:
+        group_block_shots = self.shot_allocation[group_expression]
         pool_vectors = np.zeros((self.total_samples, len(exact_probabilities)))
 
         for pool_index in range(self.total_samples):
             frequencies = self.backend.sample_frequencies(exact_probabilities, group_block_shots)
             for basis_index, count in frequencies.items():
-                pool_vectors[pool_index, basis_index] = count / group_block_shots
+                pool_vectors[pool_index, int(basis_index)] = count / group_block_shots
 
         sampled_probabilities = {}
         pool_probabilities = np.full(self.total_samples, 1 / self.total_samples)

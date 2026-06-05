@@ -114,27 +114,20 @@ def qwc_measurement_gates(expression):
     return list(m_gates.values())
 
 
-def qwc_measurements(hamiltonian):
+def qwc_measurements(terms):
     """
     Sort out a list of Hamiltonian terms into separate groups of mutually qubitwise commuting terms, and returns the
     grouped terms along with their associated measurement gates
 
     Args:
-        hamiltonian (:class:`qibo.hamiltonians.SymbolicHamiltonian`): Hamiltonian of interest
+        terms: List of (sympy.Expr, coeff) terms, without constant terms
 
     Returns:
         list: List of two-tuples, with each tuple given as (sorted_ham, [`list of measurement gates`]), where
             sorted_ham is a :class:`qibo.hamiltonians.SymbolicHamiltonian`
     """
     # Build dictionary with keys = string representation of the terms, values = corresponding (sympy.Expr, term coeff)
-    if hamiltonian.form.args:
-        ham_terms = {
-            term_to_string(term): (term, coeff)
-            for term, coeff in hamiltonian.form.as_coefficients_dict().items()
-            if not isinstance(term, One)
-        }
-    else:
-        ham_terms = {term_to_string(hamiltonian.form): (hamiltonian.form, 1.0)}  # Single Pauli operator
+    ham_terms = {term_to_string(term): (term, coeff) for term, coeff in terms}
     term_groups = group_commuting_terms(ham_terms.keys(), qubitwise=True)
     return [
         (
@@ -204,10 +197,10 @@ def _qwc_compatible(group_mask, term_mask):
     )
 
 
-def qwc_fast_measurements(hamiltonian):
+def qwc_fast_measurements(terms):
     """
     Greedily pack Pauli terms into qubitwise-commuting measurement groups.
-    Input: Symbolic Hamiltonian
+    Input: List of (sympy.Expr, coeff) terms, without constant terms
 
     Internal data format:
         term_data = [(term, coeff, term_mask), ...]
@@ -225,17 +218,14 @@ def qwc_fast_measurements(hamiltonian):
         [(group_expression, measurement_gates), ...]
     """
     # Convert every term into bitmasks for comparison later
-    term_data = [
-        (term, coeff, _qwc_mask(term))
-        for term, coeff in hamiltonian.form.as_coefficients_dict().items()
-        if not isinstance(term, One)
-    ]
+    term_data = [(term, coeff, _qwc_mask(term)) for term, coeff in terms]
     # Sort by the weights so largest groups get grouped first
     term_data.sort(key=lambda data: (-data[2][3], str(data[0])))
     # Loop through all the terms and put them into groups, check compatibility then 
     # update each group mask when new term is added
     groups = []
     for term, coeff, term_mask in term_data:
+        # For every term, check all the existing groups, if it doesnt exist then make new one
         for group in groups:
             if _qwc_compatible(group["mask"], term_mask):
                 # Define the new group mask terms
@@ -275,13 +265,13 @@ def qwc_fast_measurements(hamiltonian):
     return result
 
 
-def measurement_basis_rotations(hamiltonian, grouping=None):
+def measurement_basis_rotations(hamiltonian_or_terms, grouping=None):
     """
     Split up and sort the Hamiltonian terms to get the basis rotation gates to be applied to a quantum circuit for the
     respective (group of) terms in the Hamiltonian
 
     Args:
-        hamiltonian (:class:`qibo.hamiltonians.SymbolicHamiltonian`): Hamiltonian of interest
+        hamiltonian_or_terms: Hamiltonian of interest, or a list of (sympy.Expr, coeff) terms
         grouping (str): Whether or not to group Hamiltonian terms together, i.e. use the same set of measurements to get
             the expectation values of a group of terms simultaneously. Default value of ``None`` will not group any
             terms together. ``"qwc"`` uses graph colouring, while ``"qwc_fast"`` uses largest-first greedy QWC basis
@@ -292,17 +282,23 @@ def measurement_basis_rotations(hamiltonian, grouping=None):
         second is a list of measurement gates (:class:`qibo.gates.M`) that can be used to get the expectation value
         for the corresponding expression.
     """
+    # First convert hamiltonian into list of terms
+    if hasattr(hamiltonian_or_terms, "form"):
+        terms = [
+            (term, coeff)
+            for term, coeff in hamiltonian_or_terms.form.as_coefficients_dict().items()
+            if term != 1 and not isinstance(term, One)
+        ]
+    else:
+        terms = list(hamiltonian_or_terms)
+
     result = []
     if grouping is None:
-        result += [
-            (coeff * term, qwc_measurement_gates(term))
-            for term, coeff in hamiltonian.form.as_coefficients_dict().items()
-            if not isinstance(term, One)  # Ignore any constant term
-        ]
+        result += [(coeff * term, qwc_measurement_gates(term)) for term, coeff in terms]
     elif grouping == "qwc":
-        result += qwc_measurements(hamiltonian)
+        result += qwc_measurements(terms)
     elif grouping == "qwc_fast":
-        result += qwc_fast_measurements(hamiltonian)
+        result += qwc_fast_measurements(terms)
     else:
         raise NotImplementedError("Not ready yet!")
     return result

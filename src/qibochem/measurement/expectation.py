@@ -53,14 +53,14 @@ def bitmask_expectation(final_state, bitmasks):
 
     bitmasks = (bitmask_x, bitmask_y, bitmask_z)
     """
-    basis_states = np.arange(final_state.shape[0])
+    basis_states = np.arange(final_state.size)
     x_mask, y_mask, z_mask = bitmasks
     flip_mask = x_mask | y_mask # Select both X and Y gates
     flipped_states = basis_states ^ flip_mask # Apply XOR on every basis state 
     # Calculate the phase flips 
-    z_sign = (-1) ** np.bitwise_count(basis_states & z_mask)
-    y_sign = (-1) ** np.bitwise_count(basis_states & y_mask)
-    y_phase = (1j) ** y_mask.bit_count()
+    z_sign = (-1) ** np.bitwise_count(basis_states & z_mask).astype(int)
+    y_sign = (-1) ** np.bitwise_count(basis_states & y_mask).astype(int)
+    y_phase = (-1j) ** y_mask.bit_count()
     # Add in the coefficients for the transformed state 
     transformed_state = final_state[flipped_states]
     return np.vdot(final_state, (transformed_state*z_sign*y_sign*y_phase))

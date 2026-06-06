@@ -6,7 +6,7 @@ import pytest
 from qibo.hamiltonians import SymbolicHamiltonian
 from qibo.symbols import X, Y, Z
 
-from qibochem.measurement.optimization import (
+from qibochem.measurement.grouping import (
     check_terms_commutativity,
     group_commuting_terms,
     measurement_basis_rotations,

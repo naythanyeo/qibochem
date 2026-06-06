@@ -9,8 +9,8 @@ from qibo.symbols import X, Y, Z
 
 from qibochem.driver import Molecule
 from qibochem.measurement import expectation, expectation_from_samples, v_expectation
-from qibochem.measurement.optimization import measurement_basis_rotations
-from qibochem.measurement.result import (
+from qibochem.measurement.grouping import measurement_basis_rotations
+from qibochem.measurement.expectation import (
     pauli_term_measurement_expectation,
     sample_statistics,
 )

@@ -41,8 +41,8 @@ import qibo
 import sympy as sp
 from qibo import Circuit
 from scipy.stats import multinomial
-from qibochem.measurement.optimization import measurement_basis_rotations
-from qibochem.measurement.result import constant_term
+from qibochem.measurement.grouping import measurement_basis_rotations
+from qibochem.measurement.expectation import constant_term
 
 @dataclass
 class StateVectorProtocol:

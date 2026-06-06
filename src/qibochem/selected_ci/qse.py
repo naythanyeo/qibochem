@@ -1,4 +1,9 @@
-"""Quantum Subspace Expansion (QSE)."""
+"""
+Quantum Subspace Expansion (QSE).
+New reformatted to just use operator strings instead of symbolic hamiltonian
+Old sympy objects actually have a ton of overhead which is very slow
+Just build as openfermion objects
+"""
 
 from __future__ import annotations
 

@@ -5,36 +5,45 @@ import numpy as np
 from numpy import linalg as la
 
 
-def assemble_matrix(values, dim=None):
-        """Assemble a dense Hermitian matrix from upper-triangular values."""
-        if not values and dim is None:
-                raise ValueError("dim must be specified when values is empty.")
+def assemble_hs(values):
+    if not values:
+        raise ValueError("Cannot assemble matrices from empty values.")
 
-        if dim is None:
-                dim = max(max(i, j) for i, j in values) + 1
+    dim = max(max(i, j) for _, i, j in values) + 1
+    H = np.zeros((dim, dim), dtype=complex)
+    S = np.zeros((dim, dim), dtype=complex)
 
-        matrix = np.zeros((dim, dim), dtype=complex)
-        for (i, j), value in values.items():
-                if i >= dim or j >= dim:
-                        raise ValueError("Matrix index is outside the requested dimension.")
-                matrix[i, j] = value
-                if i != j:
-                        matrix[j, i] = np.conj(value)
-        return matrix
+    for (label, i, j), value in values.items():
+        if label == "H":
+            matrix = H
+        elif label == "S":
+            matrix = S
+        else:
+            raise ValueError("QSE matrix label must be 'H' or 'S'.")
+
+        matrix[i, j] = value
+        if i != j:
+            matrix[j, i] = np.conj(value)
+
+    return H, S
 
 
-def assemble_matrix_outputs(values, dim=None):
-        """Assemble either one matrix or sampled matrices from protocol output."""
-        if not isinstance(values, Mapping):
-                raise TypeError("values must be a mapping.")
+def assemble_matrix_outputs(values):
+    if not isinstance(values, Mapping):
+        raise TypeError("values must be a mapping.")
 
-        if all(isinstance(key, tuple) and len(key) == 2 for key in values):
-                return assemble_matrix(values, dim=dim)
+    if not values:
+        raise ValueError("Cannot assemble matrices from empty values.")
 
-        return {
-                sample_key: assemble_matrix(sample_values, dim=dim)
-                for sample_key, sample_values in values.items()
-        }
+    first_value = list(values.values())[0]
+    if not isinstance(first_value, Mapping):
+        return assemble_hs(values)
+
+    H = {}
+    S = {}
+    for sample_key, sample_values in values.items():
+        H[sample_key], S[sample_key] = assemble_hs(sample_values)
+    return H, S
 
 
 def solve_generalised_eigeneqn(S, H, threshold=1e-6):

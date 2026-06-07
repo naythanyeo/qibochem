@@ -14,11 +14,12 @@ from itertools import product
 
 import numpy as np
 import openfermion
-import sympy as sp
-from qibo import symbols
-from qibo.hamiltonians import SymbolicHamiltonian
 
-from qibochem.driver.hamiltonian import _qubit_hamiltonian, _qubit_to_symbolic_hamiltonian
+from qibochem.driver.observables import (
+    BitmaskObservable,
+    multiply_bitmask_observables,
+    qubit_operator2observable,
+)
 from qibochem.selected_ci.utils import assemble_matrix_outputs
 
 """
@@ -160,11 +161,11 @@ class QSE_Computable:
             labeled_hamiltonian.append((label, operator))
         return labeled_hamiltonian
 
-    def _map_projected_terms(self, projected):
+    def _map_operator_to_observable(self, projected):
         """
-        Function to map projected terms to qubit terms based on mapping choice
-        There is already a mapping function fermionic_to_qubit but this is more direct
-        and takes in just the operators rather than the whole fermionic hamiltonian object
+        Function to map projected terms to observable class based on mapping choice
+        After fermionic to qubit mapping is done, it is compressed, then mapped again
+        to the bitmask form with the helper function
         """
         if self.ferm_qubit_map == "jw":
             q_op = openfermion.jordan_wigner(projected)
@@ -175,75 +176,63 @@ class QSE_Computable:
         # Use a threshold smaller than main threhsold for map construction because the map terms can be
         # summed up across hpq and hpqrs terms, so we keep terms 2 orders of magnitude smaller to be safe
         q_op.compress(abs_tol=self.map_threshold * 1e-2)
-        return q_op.terms
+        return qubit_operator2observable(q_op)
 
     def _build_excitation_map(self):
         """
         Stores excitation map for both H and S in self.excitation_map 
-        For S, the map is just S directly in qubit form since its the same for all molecules
+        For S, the map is just S directly in bitmask observable form
         For H, the map is stored in terms of OEI and TEI labels 
-        H[i, j] = {pauli_string: {label: prefactor,....}}
+        H[i, j] = {label: bitmask_observable}
         label is either ("oei", p, q) or ("tei", p, q, r, s) or ("constant",)
         """
         labeled_hamiltonian = self._labeled_hamiltonian() # [(("oei", p, q), a_p^ a_q), (("tei", p, q, r, s), a_p^ a_q^ a_r a_s), ...]
         dim = len(self.operators)
         self.excitation_map = {"H": {}, "S": {}}
-        # Loop through the i, j terms for all excitation operators
+
+        # Map all reusable factors to bitmask once, then do the expensive products in bitmask form.
+        e_observables = [self._map_operator_to_observable(operator)
+                         for operator in self.operators]
+        edag_observables = [self._map_operator_to_observable(openfermion.hermitian_conjugated(operator))
+                            for operator in self.operators]
+        bitmask_labeled_hamiltonian = [(label, self._map_operator_to_observable(operator))
+                                       for label, operator in labeled_hamiltonian]
+
+        # Each matrix element is of the form E_dag P Ej, so here we cache P*Ej and reuse it 
+        right_products = []
+        for Ej in e_observables:
+            right_products_j = []
+            for label, h_observable in bitmask_labeled_hamiltonian:
+                right_product = multiply_bitmask_observables(h_observable, Ej, threshold=self.map_threshold*1e-2)
+                # Use intermediate thresold above so that the final threshold is not affected
+                if right_product.constant or right_product.terms: # Remove all the 0 terms
+                    right_products_j.append((label, right_product))
+            right_products.append(right_products_j)
+
+        # Build the full map now from all the cached terms
         for i, j in product(range(dim), repeat=2):
             if i > j:
                 continue # Only build upper triangle, will mirror for lower triangle later
-            # Projection terms
-            Ei_dag = openfermion.hermitian_conjugated(self.operators[i])
-            Ej = self.operators[j]
-            # S map
-            s_ferm = Ei_dag * Ej
-            self.excitation_map["S"][(i, j)] = dict(self._map_projected_terms(s_ferm))
-            # H map
-            h_map = defaultdict(lambda: defaultdict(complex))
-            # Loop through all the labeled hamiltonian terms
-            for label, op in labeled_hamiltonian:
-                projected = Ei_dag * op * Ej
-                if not projected.terms:
-                    continue
-                for pauli_string, prefactor in self._map_projected_terms(projected).items():
-                    if abs(prefactor) > self.map_threshold:
-                        h_map[pauli_string][label] += prefactor
-            # Convert default dict to regular dictionary so pickle can work
-            self.excitation_map["H"][(i, j)] = {
-                pauli_string: dict(label_map)
-                for pauli_string, label_map in h_map.items()
-            }
 
-    def _pauli_terms_to_symbolic(self, pauli_terms):
-        """
-        Convert cached OpenFermion Pauli-string terms to SymbolicHamiltonian.
-        Almost the same as _qubit_to_symbolic_hamiltonian, but takes in a dict of pauli terms 
-        instead of a QubitOperator. TBH can convert to qubit_hamiltonian object first but redefining 
-        it here saves some overhead cost of building a full operator.
-        """
-        pauli_symbols = {
-            (pauli_op, qubit): getattr(symbols, pauli_op)(qubit)
-            for pauli_string in pauli_terms
-            for qubit, pauli_op in pauli_string
-        }
-        symbolic_terms = [
-            sp.Mul(
-                coeff,
-                *(pauli_symbols[(pauli_op, qubit)] for qubit, pauli_op in pauli_string),
-            )
-            for pauli_string, coeff in pauli_terms.items()
-            if abs(coeff) > self.map_threshold # Here we use the main map threshold
-        ]
-        symbolic_expr = sp.Add(*symbolic_terms) if symbolic_terms else sp.Integer(0)
-        return SymbolicHamiltonian(symbolic_expr, nqubits=self.excitation_params["n_orbs"])
-    
+            s_observable = multiply_bitmask_observables(edag_observables[i], e_observables[j], 
+                                                        threshold=self.map_threshold*1e-2)
+            # Store each labelled Hamiltonian contribution as its own observable template.
+            h_map = {}
+            for label, right_product in right_products[j]:
+                projected_observable = multiply_bitmask_observables(edag_observables[i], right_product, 
+                                                                    threshold=self.map_threshold*1e-2)
+                h_map[label] = projected_observable
+                
+            self.excitation_map["S"][(i, j)] = s_observable
+            self.excitation_map["H"][(i, j)] = h_map
+
     def _reconstruct_HS_from_map(self):
         """
         Function to reconstruct the H and S matrix from the excitation map for a given molecule
-        The excitation map stores in qubit representation, but H and S data will be in symbolic form
-        For S, just need to convert map from qubit to symbolic form 
+        The excitation map stores in qubit representation, but H and S data will be in bitmask observable form.
+        For S, just need to convert map from qubit to bitmask observable form.
         For H, need to reconstruct the qubit terms first from the OEI and TEI terms,
-        then convert into symbolic form 
+        then convert into bitmask observable form.
         """
         # First get all the OEI and TEI terms needed
         # This part is almost copying molecule.hamiltonian("f")
@@ -267,79 +256,39 @@ class QSE_Computable:
                 _, p, q, r, s = label
                 return tei_so[p, q, r, s]
             raise ValueError(f"Unknown Hamiltonian label: {label}")
-        # S data just reconstruct into symbolic form
-        for element, s_terms in self.excitation_map["S"].items():
-            self.s_data[element] = self._pauli_terms_to_symbolic(s_terms)
-        # H data will map the constant, OEI and TEI terms first then convert to symbolic form
+
+        # S is already molecule-independent and stored directly as observables.
+        self.s_data = dict(self.excitation_map["S"])
+
+        # H templates are weighted by molecule-specific OEI/TEI/constant values.
+        self.h_data = {}
         for element, h_map in self.excitation_map["H"].items():
-            h_terms = {}
-            for pauli_string, label_map in h_map.items():
-                coeff = sum(
-                    prefactor * integral_value(label)
-                    for label, prefactor in label_map.items()
-                )
-                if abs(coeff) > self.map_threshold:
-                    h_terms[pauli_string] = coeff
-            self.h_data[element] = self._pauli_terms_to_symbolic(h_terms)
-
-    def _has_collated_matrix_info(self):
-        """
-        Check whether H/S observables have already been built.
-        """
-        return (
-            self.h_data is not None
-            and self.s_data is not None
-            and all(isinstance(observable, SymbolicHamiltonian) for observable in self.h_data.values())
-            and all(isinstance(observable, SymbolicHamiltonian) for observable in self.s_data.values())
-        )
-
-
-    def _collate_hs_matrix_direct(self):
-        dim = len(self.operators)
-        # Populate the Hamiltonians corresponding to each matrix element in S/H
-        for mat_data, operator in zip((self.s_data, self.h_data), (1.0, self.molecule.hamiltonian("f"))):
-            for element in mat_data.keys():
-                mat_data[element] = _qubit_to_symbolic_hamiltonian(
-                    _qubit_hamiltonian(
-                        openfermion.hermitian_conjugated(self.operators[element[0]])
-                        * operator
-                        * self.operators[element[1]],
-                        self.ferm_qubit_map,
-                    ),
-                    self.excitation_params["n_orbs"],
-                )
+            h_constant = 0.0
+            terms = defaultdict(complex)
+            # Doesnt use the default bitmask observable add function because of overhead cost
+            for label, template_observable in h_map.items():
+                integral = integral_value(label)
+                h_constant += integral * template_observable.constant
+                for term, coeff in template_observable.terms.items():
+                    terms[term] += integral * coeff
+            # Re build the bitmask observable back at the end
+            # Filter away the small terms lower than map threshold
+            self.h_data[element] = BitmaskObservable(
+                constant=h_constant if abs(h_constant) > self.map_threshold else 0.0,
+                terms={term: coeff for term, coeff in terms.items()
+                       if abs(coeff) > self.map_threshold}
+            )
 
     def collate_hs_matrix_info(self):
         """
         Main function to build the H and S matrix of observables. 
-        Supports caching of the projected H and S terms in terms of OEI and TEI terms
-        Builds a labeled hamiltonian first, then reconstruct for each molecule quickly 
-        Cached hamiltonian saves time for many molecules
-        For every active space and excitation generator, there will be 1 excitation map 
-        that can be re-used across molecules and ansatz, saves the heavy lifting of JW
-
-        Cached hamiltonian will be labeled in the form ... 
-        
-        If only single molecule and no caching wanted, then can use direct mode instead
-        which will directly compute the H and S matrix from fermionic Hamiltonian
+        If the excitation map is not yet built, then build it first 
+        After that reconstruct the HS into self.H_data and self.S_data with the reconstruct function
         """
-        if self._has_collated_matrix_info():
-            return
-        if self.excitation_map is not None: 
-            self.cache_qse_matrix = True
         if self.operators is None:
             self.operators = self.excitation_generator(self.excitation_params)
-        dim = len(self.operators)
-        # Build the dictionaries in s_data and h_data 
-        self.s_data = {(_i, _j): dict() for _i in range(dim) for _j in range(dim) if _i <= _j}
-        self.h_data = {(_i, _j): dict() for _i in range(dim) for _j in range(dim) if _i <= _j}
-        # If its false, then build via direct method and store self.s_data and self.h_data
-        if self.cache_qse_matrix is False:
-            self._collate_hs_matrix_direct()
-            return  
-        # In this case, if caching is desired, then it will build the H S observable map from the excitation mpa first
-        # If the excitaiton map is not yet built, then construct it 
-        elif self.excitation_map is None:
+
+        if self.excitation_map is None:
             self._build_excitation_map()
         # From the excitation map, reconstruct H and S based on OEI and TEI terms
         self._reconstruct_HS_from_map()
@@ -359,17 +308,23 @@ class QSE_Computable:
         Returns:
             H and S matrices as arrays, or dictionaries of sampled matrices.
         """
-        # First define the excitation operators 
+        # First define the excitation operators.
         if self.operators is None:
             self.operators = self.excitation_generator(self.excitation_params)
 
-        # Update the H and S observables  
-        if not self._has_collated_matrix_info():
+        # Update the H and S observables if they were not done before
+        # This can be reused, IE the QSE computable can be reused for same active space and molecule for 
+        # different ansatz etc. So if re-used, the terms will not be re-collated
+        if self.h_data is None or self.s_data is None:
             self.collate_hs_matrix_info()
-        H_values = protocol.evaluate(circuit, self.h_data)
-        S_values = protocol.evaluate(circuit, self.s_data)
 
-        H = assemble_matrix_outputs(H_values)
-        S = assemble_matrix_outputs(S_values)
+        # Group the H and S observables together into one dictionary so protocol evaluates it at once
+        # This is for global commuting terms to be implemented
+        qse_observables = {("H", *element): observable
+                            for element, observable in self.h_data.items()}
+        qse_observables.update({("S", *element): observable
+                                 for element, observable in self.s_data.items()})
+
+        H, S = assemble_matrix_outputs(protocol.evaluate(circuit, qse_observables))
 
         return H, S

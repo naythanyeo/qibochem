@@ -7,7 +7,7 @@ from qibochem.selected_ci.qse import (
     generate_singlet_singles,
     generate_triplet_singles,
 )
-from qibochem.selected_ci.utils import assemble_matrix, solve_generalised_eigeneqn
+from qibochem.selected_ci.utils import assemble_matrix_outputs, solve_generalised_eigeneqn
 
 __all__ = [
     "QSCI",
@@ -18,6 +18,6 @@ __all__ = [
     "generate_general_singles",
     "generate_singlet_singles",
     "generate_triplet_singles",
-    "assemble_matrix",
+    "assemble_matrix_outputs",
     "solve_generalised_eigeneqn",
 ]

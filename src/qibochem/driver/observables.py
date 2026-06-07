@@ -12,7 +12,7 @@ constant: complex number
 terms: {(bitmask x, bitmask y, bitmask z): coeff}
 
 Here we first include helper functions to convert the qubit form of observables into the bitmask form
-
+Also helper functions to multiply terms
 """
 
 from dataclasses import dataclass
@@ -22,6 +22,19 @@ from collections import defaultdict
 class BitmaskObservable:
     constant: complex
     terms: dict
+
+    def scale(self, scalar, threshold=0.0):
+        """Return a new observable multiplied by a scalar."""
+        constant = scalar * self.constant
+        terms = {
+            term: scalar * coeff
+            for term, coeff in self.terms.items()
+            if abs(scalar * coeff) > threshold
+        }
+        if abs(constant) <= threshold:
+            constant = 0.0
+
+        return BitmaskObservable(constant=constant, terms=terms)
 
 def qubit_term2bitmask(qubit_term):
     """
@@ -62,3 +75,115 @@ def qubit_operator2observable(qubit_operator):
             bitmask = qubit_term2bitmask(qubit_term)
             terms[bitmask] += coeff
     return BitmaskObservable(constant = constant, terms = terms)
+
+
+"""
+Here we define some simple bitmask operations between pauli gates 
+For addition between masks, a simple | OR function will suffice
+For multiplication between bitmask, we need to construct a multiplication map
+
+Helper function here will allow for multiplication of bitmask terms 
+"""
+
+def multiply_bitmask_terms(a, b):
+    """
+    Multiply two Pauli terms in bitmask form.
+
+    Args:
+        a, b: (x_mask, y_mask, z_mask)
+
+    Returns:
+        ((x_mask, y_mask, z_mask), phase)
+    """
+    ax, ay, az = a
+    bx, by, bz = b
+
+    a_occ = ax | ay | az
+    b_occ = bx | by | bz
+
+    only_ax = ax & ~b_occ
+    only_ay = ay & ~b_occ
+    only_az = az & ~b_occ
+
+    only_bx = bx & ~a_occ
+    only_by = by & ~a_occ
+    only_bz = bz & ~a_occ
+
+    rx = only_ax | only_bx | (ay & bz) | (az & by)
+    ry = only_ay | only_by | (ax & bz) | (az & bx)
+    rz = only_az | only_bz | (ax & by) | (ay & bx)
+
+    plus_i_count = (
+        (ax & by).bit_count() +  # X Y = iZ
+        (ay & bz).bit_count() +  # Y Z = iX
+        (az & bx).bit_count()    # Z X = iY
+    )
+
+    minus_i_count = (
+        (ay & bx).bit_count() +  # Y X = -iZ
+        (az & by).bit_count() +  # Z Y = -iX
+        (ax & bz).bit_count()    # X Z = -iY
+    )
+
+    phase = (1j) ** (plus_i_count - minus_i_count)
+
+    return (rx, ry, rz), phase
+
+
+def multiply_bitmask_observables(left, right, threshold=0.0):
+    """
+    Multiply two BitmaskObservable objects.
+
+    Identity contributions are stored in ``constant`` to preserve the
+    BitmaskObservable convention. Callers that need explicit identity keys can
+    emit ``(0, 0, 0): constant`` at the output boundary.
+    """
+    constant = left.constant * right.constant
+    terms = defaultdict(complex)
+
+    for term, coeff in left.terms.items():
+        terms[term] += coeff * right.constant
+
+    for term, coeff in right.terms.items():
+        terms[term] += left.constant * coeff
+
+    for left_term, left_coeff in left.terms.items():
+        for right_term, right_coeff in right.terms.items():
+            term, phase = multiply_bitmask_terms(left_term, right_term)
+            coeff = left_coeff * right_coeff * phase
+            if term == (0, 0, 0):
+                constant += coeff
+            else:
+                terms[term] += coeff
+
+    filtered_terms = {
+        term: coeff
+        for term, coeff in terms.items()
+        if abs(coeff) > threshold
+    }
+    if abs(constant) <= threshold:
+        constant = 0.0
+
+    return BitmaskObservable(constant=constant, terms=filtered_terms)
+
+
+def add_bitmask_observables(left, right, threshold=0.0):
+    """Add two BitmaskObservable objects."""
+    constant = left.constant + right.constant
+    terms = defaultdict(complex)
+
+    for term, coeff in left.terms.items():
+        terms[term] += coeff
+
+    for term, coeff in right.terms.items():
+        terms[term] += coeff
+
+    filtered_terms = {
+        term: coeff
+        for term, coeff in terms.items()
+        if abs(coeff) > threshold
+    }
+    if abs(constant) <= threshold:
+        constant = 0.0
+
+    return BitmaskObservable(constant=constant, terms=filtered_terms)

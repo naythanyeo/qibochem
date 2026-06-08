@@ -124,37 +124,30 @@ def filter_paired(unfiltered_list):
 def group_spin_adapt(unfiltered_list):
     """
     Group excitations for UCCSDSinglet-style parameter tying.
-    The grouping key is based on spatial hole-particle matching. In the general
-    case, spatial orbitals are intentionally not sorted, because the matching
-    information matters. For example, the SPATIAL orbitals
-    12 -> 34
-    12 -> 43
-    represent different matched excitation channels and should remain separate.
+    Each spin-orbital excitation is converted into spatial hole-particle transitions by 
+    pairing holes and particles position-wise. For eg,
 
-    However, when either the hole side or particle side contains a repeated
-    spatial orbital, the ordering on that repeated side is not physically
-    distinct in the spin-adapted parametrisation. For example,
-    00 -> 23
-    00 -> 32
-    should be grouped together because both correspond to exciting an alpha/beta
-    pair from the same spatial orbital into the same pair of target spatial
-    orbitals.
-    As such, we must account for symmetry, and return a sorted spatial key so that
-    both groups will be combined when there is symmetry
+    (h0, h1) -> (p0, p1) transforms into
+    ((h0 // 2, p0 // 2), (h1 // 2, p1 // 2))
+
+    We use this form because sorting or grouping by (hole) (pair) ends up with lots of edge
+    cases in terms of the sorting order. You cannot sort it trivially because then cases like
+    12 -> 34 vs 12 -> 43 (SPATIAL)
+    which represent different matched excitation channels collapse to the same state.
+    
+    At the same time you cannot also just not sort the (hole) (pair) form because symmetry terms like
+    00 -> 23 00 -> 32 (SPATIAL)
+    are the same excitations, will not group together. 
+
+    Hence we match every excitation pair to each other, then group them that way. 
+    This method accounts for all the symmetry issues from before. 
     """
     
     def spin2spatial_key(transition):
         holes, particles= transition
-        spatial_holes = tuple(i // 2 for i in holes)
-        spatial_particles = tuple(a // 2 for a in particles)
-        # Check to account for repeated hole/particle
-        holes_repeated = len(set(spatial_holes)) < len(spatial_holes)
-        particles_repeated = len(set(spatial_particles)) < len(spatial_particles)
-        # If the holes or particles are repeated, then account for the symmetry and group together 
-        if holes_repeated or particles_repeated:
-            return tuple(sorted(spatial_holes)), tuple(sorted(spatial_particles))
-        # If not symmetrical, then return normmal key
-        return spatial_holes, spatial_particles
+        spatial_lines = [(h // 2, p // 2)
+                         for h, p in zip(holes, particles)]
+        return tuple(sorted(spatial_lines))
 
     groups = {}
     for transition in unfiltered_list:

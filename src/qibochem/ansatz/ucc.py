@@ -12,7 +12,7 @@ from qibo.optimizers import optimize
 from qibochem.ansatz.hf_reference import hf_circuit
 from qibochem.ansatz.excitation_util import (generate_excitations, mp2_amplitude, filter_OV_transition, 
                                              filter_paired, filter_spin, group_spin_adapt, flatten_excitation,
-                                             sort_excitations, filter_unique_generalised)
+                                             sort_excitations, filter_cross_excitations)
 
 
 def expi_pauli(n_qubits, pauli_string, theta):
@@ -74,18 +74,16 @@ def ucc_circuit(n_qubits, excitation, theta=0.0, trotter_steps=1, ferm_qubit_map
         :class:`qibo.models.circuit.Circuit`: Circuit corresponding to a single UCC excitation
     """
     # Check size of orbitals input
-    n_orbitals = len(excitation)
-    assert n_orbitals % 2 == 0, f"{excitation} must have an even number of items"
-    # Reverse sort orbitals to get largest-->smallest
-    sorted_orbitals = sorted(excitation, reverse=True)
+    n_operators = len(excitation)
+    assert n_operators % 2 == 0, f"{excitation} must have an even number of items"
 
     # Define default mapping
     if ferm_qubit_map is None:
         ferm_qubit_map = "jw"
 
     # Define the UCC excitation operator corresponding to the given list of orbitals
-    fermion_op_str_template = f"{(n_orbitals//2)*'{}^ '}{(n_orbitals//2)*'{} '}"
-    fermion_operator_str = fermion_op_str_template.format(*sorted_orbitals)
+    fermion_op_str_template = f"{(n_operators//2)*'{}^ '}{(n_operators//2)*'{} '}"
+    fermion_operator_str = fermion_op_str_template.format(*excitation)
     # Build the FermionOperator and make it unitary
     fermion_operator = openfermion.FermionOperator(fermion_operator_str)
     ucc_operator = fermion_operator - openfermion.hermitian_conjugated(fermion_operator)
@@ -181,12 +179,13 @@ class UCCAnsatz:
             "Cannot call UCCAnsatz directly. Use a concrete ansatz class such as UCCSD, UCCGSD, or UCCSDSinglet."
         )
 
-    def _generate_ansatz_excitations(self, rank, generalised, spin_conserve, paired, spin_adapt):
+    def _generate_ansatz_excitations(self, rank, generalised, spin_conserve, paired, spin_adapt,
+                                     parallel_excitations=True):
         excitations = generate_excitations(rank, self.n_orbs)
-        if generalised:
-            excitations = filter_unique_generalised(excitations)
-        else:
+        if not generalised:
             excitations = filter_OV_transition(excitations, self.n_elec, self.n_orbs)
+        elif parallel_excitations==True: # Default restriction to match Inquanto for restricted generalised ansatz
+            excitations = filter_cross_excitations(excitations)
         if spin_conserve:
             excitations = filter_spin(excitations)
         if paired:
@@ -353,9 +352,9 @@ class Ansatz_kUpCCGSDSinglet(UCCAnsatz):
         param_excitations = {}
         for iteration in range(self.k):
             singles_excitations = self._generate_ansatz_excitations(rank=1, generalised=True, spin_conserve=True, 
-                                                                paired=False, spin_adapt=False)
+                                                                paired=False, spin_adapt=True)
             doubles_excitations = self._generate_ansatz_excitations(rank=2, generalised=True, spin_conserve=True, 
-                                                                paired=True, spin_adapt=False)
+                                                                paired=True, spin_adapt=True)
             for key, value in singles_excitations.items():
                 param_excitations[f"{key}_k{iteration}"] = value
             for key, value in doubles_excitations.items():

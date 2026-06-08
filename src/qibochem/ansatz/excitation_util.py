@@ -11,21 +11,42 @@ In general an Ansatz will then be constructed from a combination of these functi
 # Generate All Excitations
 def generate_excitations(rank, n_orbs): 
     """
-    Function to generate ALL possible excitations for a particular rank
-    First groups them by sets with combinations to prevent overlap 
-    Then find all possible excitations, including O->V, O->O, V->V, V->O
-    However, filters out all repeated or duplicated excitations, ie 0->0 for eg or 1->1 will be filtered out
+    Function to generate ALL possible excitations for a particular rank (including 0->O and V->V)
+    First groups them by sets with combinations
+
+    This general function find all possible excitations, including O->O and V->V
+
+    However, this filters out all repeated or duplicated excitations, ie 0->0 for eg or 1->1 will be filtered out
     For doubles also, if (0, 1) -> (0, 2) will not be allowed (with isdisjoint)
+
+    A second filter is also in place which only keeps one set of excitation directions. Because UCC
+    ansatz fundamentally does e^(T - T+), so the conjugate is already repeated. So for eg if you have 
+    a0 a1 a2+ a3+, it will give identical operations if you do a2 a3 a0+ a1+ after the conjugate has been
+    subtracted (up to a sign). However, the subspace will be the same. Therefore, we keep only one copy. 
+    For standardisation, we just keep the lower to higher transition, so enforce that the "holes" is 
+    smaller than "particles". This will follow python lexicographic sorting and keeps a unique copy. 
+
+    Last part will sort all the pairs by spin order, so all the alpha electrons first then beta electrons 
+    This just defines the convention clearly, because before combinations only allows for unique lists, eg
+    0->1 and not 1->0. But this step chooses to fix the up spin electrons first, which allows for more 
+    consistent and robust sorting later on.
+
     Outputs: 
     Singles: ((1,), (2,)), ((1,), (3,))... 
     Doubles: ((1, 2), (3, 4)), ((1, 2), (3, 5)) ... 
-    Generally: ((Excite from Sets), (Excite to Sets))
+    Generally: ((Excite from Sets (Holes))), (Excite to Sets (Particles)))
     """
+    def sort_by_spin(pair):
+        return tuple(sorted(pair, key=lambda i: i % 2))
     index_sets = list(combinations(range(n_orbs), r=rank))
     excitations = list(excitation for excitation in 
                        product(index_sets, repeat = 2) 
-                       if set(excitation[0]).isdisjoint(excitation[1]))
-    return excitations
+                       if (set(excitation[0]).isdisjoint(excitation[1]) # First filter to remove duplicate terms
+                       and excitation[0] < excitation[1]))# Second filter to remove the conjugate terms
+    spin_sorted_excitations = [(sort_by_spin(hole), sort_by_spin(particle)) 
+                               for (hole, particle) in excitations]
+    return spin_sorted_excitations
+
 
 def filter_OV_transition(unfiltered_list, n_elec, n_orbs):
     """
@@ -37,38 +58,48 @@ def filter_OV_transition(unfiltered_list, n_elec, n_orbs):
     filtered_list = [transition for transition in unfiltered_list 
                      if set(transition[0]).issubset(occupied) 
                      and set(transition[1]).issubset(virtual)]
+    
     return filtered_list
 
-def filter_unique_generalised(excitations):
+
+def filter_cross_excitations(unfiltered_list):
     """
-    Used to filter out duplicate excitations for generalised ansatz 
-    Because UCC already does (a0 a1+) - (a1 a0+)
-    So all the conjugates are including in creating UCC circuit, so they are repeated parameters here
-    Hence remoe all those even for generalised ansatz 
-    For non generalised ansatz, they are naturally removed since only O->V are allowed (both directions not allowed)
-    This means that for generalised ansatz, the additional "terms" we are including are the O->O and V->V transitions
+    Used to filter out cross excitations, only retaining parallel excitations for multi excitations
+    This is in place to restrict the generalised ansatz slightly based on Inquanto Convention
+    These kind only allowed if OV is not restricted. 
+    NOTE: Not totally sure if this restriction is needed for generalised ansatz, because it is spin 
+    conserviving, and it is not the conjugate of anything. However, Inquanto seems to restrict this 
+    to only parallel track excitations. Overall this filter will cut down the Generalised ansatz 
+    significantly so it also helps with circuit depth. 
+    
+    0a 2b -> 1a 1b (X) Not allowed because alpha is 0->1 (UP) while beta is 2->1 (DOWN)
+    0a 1b -> 1a 2b (√) Allowed because both alpha and beta excites upwards
+
+    Following the previous convention that the upwards conjugate term is kept, here we restrict all
+    excitations such that only upwards excitations are allowed.
     """
-    filtered = []
-    for holes, particles in excitations:
-        if holes == particles:
-            continue
-        if holes > particles:
-            continue
-        filtered.append((holes, particles))
-    return filtered
+    filtered_list = []
+    for (hole, particle) in unfiltered_list: 
+        if all(hole[i] <= particle[i] for i in range(len(hole))):
+            filtered_list.append((hole, particle))
+
+    return filtered_list
+
 
 def filter_spin(unfiltered_list):
     """
     Filters to keep only spin conserved transitions (m = 0) 
-    Different from spin-adapt --> just counts total spin of destroyed and created
-    Used for most ansatz 
+    Different from spin-adapt --> makes sure that each spin of every hole matches the corresponding particle term
+    Should be used for all ansatz 
     """
-    def sum_spin(index_list):
-        return sum(i % 2 for i in index_list)
-    filtered_list = [transition for transition in unfiltered_list 
-                     if sum_spin(transition[0]) == sum_spin(transition[1])]
+    filtered_list = []
+    for (hole, particle) in unfiltered_list: 
+        if all(hole[i]%2 == particle[i]%2 for i in range(len(hole))):
+            filtered_list.append((hole, particle))
+
     return filtered_list
     
+
 def filter_paired(unfiltered_list):
     """
     Filters to only keep paired doubles, ie every doubles term in transition must be
@@ -86,25 +117,52 @@ def filter_paired(unfiltered_list):
     filtered_list = [transition for transition in unfiltered_list
                      if is_made_of_pairs(transition[0])
                      and is_made_of_pairs(transition[1])]
+    
     return filtered_list
+
 
 def group_spin_adapt(unfiltered_list):
     """
-    Group excitations by spatial hole pattern and spatial particle pattern.
-    Used for UCCSDSinglet-style parameter tying.
+    Group excitations for UCCSDSinglet-style parameter tying.
+    The grouping key is based on spatial hole-particle matching. In the general
+    case, spatial orbitals are intentionally not sorted, because the matching
+    information matters. For example, the SPATIAL orbitals
+    12 -> 34
+    12 -> 43
+    represent different matched excitation channels and should remain separate.
+
+    However, when either the hole side or particle side contains a repeated
+    spatial orbital, the ordering on that repeated side is not physically
+    distinct in the spin-adapted parametrisation. For example,
+    00 -> 23
+    00 -> 32
+    should be grouped together because both correspond to exciting an alpha/beta
+    pair from the same spatial orbital into the same pair of target spatial
+    orbitals.
+    As such, we must account for symmetry, and return a sorted spatial key so that
+    both groups will be combined when there is symmetry
     """
-    def spin2spatial(transition):
-        holes, excited = transition
-        spatial_holes = tuple((i // 2 for i in holes))
-        spatial_excited = tuple((a // 2 for a in excited))
-        return spatial_holes, spatial_excited
+    
+    def spin2spatial_key(transition):
+        holes, particles= transition
+        spatial_holes = tuple(i // 2 for i in holes)
+        spatial_particles = tuple(a // 2 for a in particles)
+        # Check to account for repeated hole/particle
+        holes_repeated = len(set(spatial_holes)) < len(spatial_holes)
+        particles_repeated = len(set(spatial_particles)) < len(spatial_particles)
+        # If the holes or particles are repeated, then account for the symmetry and group together 
+        if holes_repeated or particles_repeated:
+            return tuple(sorted(spatial_holes)), tuple(sorted(spatial_particles))
+        # If not symmetrical, then return normmal key
+        return spatial_holes, spatial_particles
 
     groups = {}
     for transition in unfiltered_list:
-        key = spin2spatial(transition)
+        key = spin2spatial_key(transition)
         groups.setdefault(key, []).append(transition)
 
     return list(groups.values())
+
 
 def flatten_excitation(excitation):
     """
@@ -113,6 +171,7 @@ def flatten_excitation(excitation):
     """
     holes, particles = excitation
     return tuple(holes) + tuple(particles)
+
 
 def sort_excitations(excitations_list):
     """
@@ -134,7 +193,9 @@ def sort_excitations(excitations_list):
         for excitation in canonical_group:
             token.extend(excitation)
         return tuple(token)
+    
     return sorted(excitations_list, key=group_token)
+
 
 """
 Other utility functions for ansatzes

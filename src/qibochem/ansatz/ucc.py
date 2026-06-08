@@ -12,7 +12,7 @@ from qibo.optimizers import optimize
 from qibochem.ansatz.hf_reference import hf_circuit
 from qibochem.ansatz.excitation_util import (generate_excitations, mp2_amplitude, filter_OV_transition, 
                                              filter_paired, filter_spin, group_spin_adapt, flatten_excitation,
-                                             sort_excitations)
+                                             sort_excitations, filter_unique_generalised)
 
 
 def expi_pauli(n_qubits, pauli_string, theta):
@@ -183,7 +183,9 @@ class UCCAnsatz:
 
     def _generate_ansatz_excitations(self, rank, generalised, spin_conserve, paired, spin_adapt):
         excitations = generate_excitations(rank, self.n_orbs)
-        if not generalised:
+        if generalised:
+            excitations = filter_unique_generalised(excitations)
+        else:
             excitations = filter_OV_transition(excitations, self.n_elec, self.n_orbs)
         if spin_conserve:
             excitations = filter_spin(excitations)

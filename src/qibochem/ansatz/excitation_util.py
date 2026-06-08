@@ -14,13 +14,17 @@ def generate_excitations(rank, n_orbs):
     Function to generate ALL possible excitations for a particular rank
     First groups them by sets with combinations to prevent overlap 
     Then find all possible excitations, including O->V, O->O, V->V, V->O
+    However, filters out all repeated or duplicated excitations, ie 0->0 for eg or 1->1 will be filtered out
+    For doubles also, if (0, 1) -> (0, 2) will not be allowed (with isdisjoint)
     Outputs: 
     Singles: ((1,), (2,)), ((1,), (3,))... 
     Doubles: ((1, 2), (3, 4)), ((1, 2), (3, 5)) ... 
     Generally: ((Excite from Sets), (Excite to Sets))
     """
     index_sets = list(combinations(range(n_orbs), r=rank))
-    excitations = list(product(index_sets, repeat = 2))
+    excitations = list(excitation for excitation in 
+                       product(index_sets, repeat = 2) 
+                       if set(excitation[0]).isdisjoint(excitation[1]))
     return excitations
 
 def filter_OV_transition(unfiltered_list, n_elec, n_orbs):
@@ -34,6 +38,24 @@ def filter_OV_transition(unfiltered_list, n_elec, n_orbs):
                      if set(transition[0]).issubset(occupied) 
                      and set(transition[1]).issubset(virtual)]
     return filtered_list
+
+def filter_unique_generalised(excitations):
+    """
+    Used to filter out duplicate excitations for generalised ansatz 
+    Because UCC already does (a0 a1+) - (a1 a0+)
+    So all the conjugates are including in creating UCC circuit, so they are repeated parameters here
+    Hence remoe all those even for generalised ansatz 
+    For non generalised ansatz, they are naturally removed since only O->V are allowed (both directions not allowed)
+    This means that for generalised ansatz, the additional "terms" we are including are the O->O and V->V transitions
+    """
+    filtered = []
+    for holes, particles in excitations:
+        if holes == particles:
+            continue
+        if holes > particles:
+            continue
+        filtered.append((holes, particles))
+    return filtered
 
 def filter_spin(unfiltered_list):
     """
@@ -67,25 +89,14 @@ def filter_paired(unfiltered_list):
     return filtered_list
 
 def group_spin_adapt(unfiltered_list):
-    def spin2spatial(index_lists):
-        from_index = [i // 2 for i in index_lists[0]]
-        to_index = [i // 2 for i in index_lists[1]]
-        return [from_index, to_index]
-    unique_keys = set([spin2spatial(transition) for transition in unfiltered_list])
-    sorted_groups = [[transition for transition in unfiltered_list
-                      if spin2spatial(transition) == key] 
-                      for key in unique_keys]
-    return sorted_groups
-
-def group_spin_adapt(unfiltered_list):
     """
     Group excitations by spatial hole pattern and spatial particle pattern.
     Used for UCCSDSinglet-style parameter tying.
     """
     def spin2spatial(transition):
         holes, excited = transition
-        spatial_holes = tuple(sorted(i // 2 for i in holes))
-        spatial_excited = tuple(sorted(a // 2 for a in excited))
+        spatial_holes = tuple((i // 2 for i in holes))
+        spatial_excited = tuple((a // 2 for a in excited))
         return spatial_holes, spatial_excited
 
     groups = {}

@@ -129,12 +129,16 @@ class UCCAnsatz:
                                        ferm_qubit_map=self.ferm_qubit_map)
         return circuit
 
-    # Function to map the param_excitations into the corresponding CIRCUIT parameters
-    # Outputs the coefficients of each circuit parameter relative to the ansatz parameters
+
     def _get_param_map(self):
         """
         Function to map the param_excitations into the corresponding CIRCUIT parameters
-        Outputs the coefficients of each circuit parameter relative to the ansatz parameters
+        Outputs the coefficients of each CIRCUIT parameter RELATIVE to the ansatz parameters
+        The param map here is important because every ANSATZ parameter is first multiplied by 
+        -2i when converted to a RZ rotation gate, and each pauli string has a mapping coefficient
+        Eg. 0.125i * X0 Y1 Z2, the 0.125i must be retained before setting circuit coeff
+        So this param map naturally stores all the mapped coefficients to calculate the 
+        proper circuit coefficients at each cycle. 
         """
         param_map = {}
         for name, excitations in self.param_excitations.items():
@@ -145,7 +149,7 @@ class UCCAnsatz:
                 qubit_ucc_operator = excitation2qubit_observable(excitation, ferm_qubit_map=self.ferm_qubit_map)
                 for _ in range(self.trotter_steps):
                     for raw_pauli_string in qubit_ucc_operator.get_operators():
-                        ((_pauli_ops, coeff),) = raw_pauli_string.terms.items()
+                        ((_, coeff),) = raw_pauli_string.terms.items()
                         gate_coeff = np.real(-2.0 * (-1.0j * coeff) / self.trotter_steps)
                         param_map[name].append(gate_coeff)
         return param_map

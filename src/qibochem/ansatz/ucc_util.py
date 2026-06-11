@@ -54,8 +54,8 @@ def excitation2qubit_observable(excitation, ferm_qubit_map='jw'):
     # Group the excitation into open fermion form
     holes, particles = excitation
     fermion_operator_str = "".join(
-        [f"{p}^" for p in particles] +
-        [f"{h}" for h in holes]
+        [f"{p}^ " for p in particles] +
+        [f"{h} " for h in holes]
     )
     # Build the FermionOperator and make it unitary
     fermion_operator = openfermion.FermionOperator(fermion_operator_str)

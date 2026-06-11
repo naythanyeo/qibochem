@@ -5,9 +5,13 @@ Circuit ansatz for representing a fermionic excitation as a Givens rotation by A
 from qibo import Circuit, gates
 
 from qibochem.ansatz.hf_reference import hf_circuit
-from qibochem.ansatz.excitation_util import generate_excitations, mp2_amplitude, sort_excitations
+from qibochem.ansatz.excitation_util import generate_excitations, filter_OV_transition, filter_spin
+from qibochem.ansatz.ucc_util import mp2_amplitude
 
 # Helper functions
+def _flatten_transition(transition):
+    holes, particles = transition
+    return [*holes, *particles]
 
 
 def single_excitation_gate(sorted_orbitals, theta):
@@ -143,7 +147,10 @@ def givens_excitation_ansatz(
     if excitations is None:
         excitations = []
         for order in range(2, 0, -1):  # Reversed to get double excitations first, then singles
-            excitations += sort_excitations(generate_excitations(order, range(0, n_elec), range(n_elec, n_orbs)))
+            generated = generate_excitations(order, n_orbs)
+            generated = filter_OV_transition(generated, n_elec, n_orbs)
+            generated = filter_spin(generated)
+            excitations += [_flatten_transition(excitation) for excitation in generated]
     else:
         # Some checks to ensure the given excitations are valid
         assert all(len(_ex) in (2, 4) for _ex in excitations), "Only single and double excitations allowed!"

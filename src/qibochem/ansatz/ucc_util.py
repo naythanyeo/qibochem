@@ -108,44 +108,50 @@ def ucc_circuit(n_qubits, excitation, theta=0.0, trotter_steps=1, ferm_qubit_map
 
 
 def mp2_amplitude(excitation, orbital_energies, tei):
-    r"""
-    Calculate the MP2 guess amplitude for a single UCC circuit: 0.0 for a single excitation.
-        for a double excitation (In SO basis): :math:`t_{ij}^{ab} = (g_{ijab} - g_{ijba}) / (e_i + e_j - e_a - e_b)`
-
-    Args:
-        excitation: Iterable of spin-orbitals representing a excitation. Must have either 2 or 4 elements exactly,
-            representing a single or double excitation respectively.
-        orbital_energies: eigenvalues of the Fock operator, i.e. orbital energies
-        tei: Two-electron integrals in MO basis and second quantization notation
-
-    Returns:
-        MP2 guess amplitude (float)
     """
-    # Check validity of excitation
-    assert len(excitation[0]) == len(excitation[1]), f"{excitation} must have same number of holes and particles"
-    # If single excitation, can just return 0.0 directly
-    if len(excitation[0]) == 1:
+    Calculate MP2 guess amplitude for one excitation.
+    excitation format: (holes, particles)
+    For doubles:
+        holes     = (i, j)
+        particles = (a, b)
+    MP2:
+        t_ij^ab = (g_ijab - g_ijba) / (eps_i + eps_j - eps_a - eps_b)
+    """
+    holes, particles = excitation
+    if len(holes) != len(particles):
+        raise ValueError(f"{excitation} must have same number of holes and particles.")
+    # MP2 singles amplitudes are zero in canonical HF orbitals.
+    if len(holes) == 1:
         return 0.0
-    # Convert orbital indices to be in MO basis
-    mo_orbitals = [orbital // 2 for orbital in excitation]
-    # Numerator: g_ijab - g_ijba
-    g_ijab = (
-        tei[tuple(mo_orbitals)]  # Can index directly using the MO TEIs
-        if (excitation[0] + excitation[3]) % 2 == 0 and (excitation[1] + excitation[2]) % 2 == 0
-        else 0.0
-    )
-    g_ijba = (
-        tei[tuple(mo_orbitals[:2] + mo_orbitals[2:][::-1])]  # Reverse last two terms
-        if (excitation[0] + excitation[2]) % 2 == 0 and (excitation[1] + excitation[3]) % 2 == 0
-        else 0.0
-    )
+    if len(holes) != 2:
+        raise ValueError("MP2 amplitude is only implemented for singles and doubles.")
+
+    i, j = holes
+    a, b = particles
+
+    i_mo, j_mo = i // 2, j // 2
+    a_mo, b_mo = a // 2, b // 2
+
+    # Direct term: <ij|ab>
+    # By default this will be true if using spin adapt ansatz
+    if (i % 2 == a % 2) and (j % 2 == b % 2):
+        g_ijab = tei[i_mo, j_mo, a_mo, b_mo]
+    else:
+        g_ijab = 0.0
+    # Exchange term: <ij|ba>
+    # Only consider the exchange term if both electrons are same spin
+    if (i % 2 == b % 2) and (j % 2 == a % 2):
+        g_ijba = tei[i_mo, j_mo, b_mo, a_mo]
+    else:
+        g_ijba = 0.0
     numerator = g_ijab - g_ijba
-    # Denominator is directly from the orbital energies
-    # Guards added against denominator and amplitude to catch nan or inf values
-    denominator = sum(orbital_energies[mo_orbitals[:2]]) - sum(orbital_energies[mo_orbitals[2:]])
+
+    denominator = (orbital_energies[i_mo] + orbital_energies[j_mo] - 
+                   orbital_energies[a_mo] - orbital_energies[b_mo])
+    # Safeguards against div by 0
     if abs(denominator) < 1e-12:
         return 0.0
     amplitude = numerator / denominator
-    if np.isnan(amplitude):
+    if not np.isfinite(amplitude):
         return 0.0
     return amplitude

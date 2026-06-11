@@ -139,6 +139,10 @@ class UCCAnsatz:
         Eg. 0.125i * X0 Y1 Z2, the 0.125i must be retained before setting circuit coeff
         So this param map naturally stores all the mapped coefficients to calculate the 
         proper circuit coefficients at each cycle. 
+
+        NOTE: For future implmentation, the excitations here are NOT tied to coefficients, so
+        grouping of spin adapt is really more tying down spin complements / singlet adapt 
+        Should allow for input of coefficients for each group then take note of those coeff
         """
         param_map = {}
         for name, excitations in self.param_excitations.items():

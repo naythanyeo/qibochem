@@ -99,7 +99,6 @@ class QSE_Computable:
     excitation_generator: Callable
     spin_projection: int | str = 0
     ferm_qubit_map: str = "jw"
-    cache_qse_matrix: bool = True
     excitation_map: dict = None # Cached QSE excitation map --> RETURN and CACHE THIS
     map_threshold: float = 1e-12
 
@@ -176,7 +175,7 @@ class QSE_Computable:
         # Use a threshold smaller than main threhsold for map construction because the map terms can be
         # summed up across hpq and hpqrs terms, so we keep terms 2 orders of magnitude smaller to be safe
         q_op.compress(abs_tol=self.map_threshold * 1e-2)
-        return qubit_operator2observable(q_op)
+        return qubit_operator2observable(q_op, n_qubits=self.excitation_params["n_orbs"])
 
     def _build_excitation_map(self):
         """
@@ -203,7 +202,7 @@ class QSE_Computable:
         for Ej in e_observables:
             right_products_j = []
             for label, h_observable in bitmask_labeled_hamiltonian:
-                right_product = multiply_bitmask_observables(h_observable, Ej, threshold=self.map_threshold*1e-2)
+                right_product = multiply_bitmask_observables(h_observable, Ej, threshold=0)
                 # Use intermediate thresold above so that the final threshold is not affected
                 if right_product.constant or right_product.terms: # Remove all the 0 terms
                     right_products_j.append((label, right_product))
@@ -215,12 +214,12 @@ class QSE_Computable:
                 continue # Only build upper triangle, will mirror for lower triangle later
 
             s_observable = multiply_bitmask_observables(edag_observables[i], e_observables[j], 
-                                                        threshold=self.map_threshold*1e-2)
+                                                        threshold=self.map_threshold)
             # Store each labelled Hamiltonian contribution as its own observable template.
             h_map = {}
             for label, right_product in right_products[j]:
                 projected_observable = multiply_bitmask_observables(edag_observables[i], right_product, 
-                                                                    threshold=self.map_threshold*1e-2)
+                                                                    threshold=0)
                 h_map[label] = projected_observable
                 
             self.excitation_map["S"][(i, j)] = s_observable

@@ -46,7 +46,7 @@ def assemble_matrix_outputs(values):
     return H, S
 
 
-def solve_generalised_eigeneqn(S, H, threshold=1e-6):
+def solve_generalised_eigeneqn(H, S, threshold=1e-6):
         """
         Performs a single run of the QSE protocol
         """

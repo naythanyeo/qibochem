@@ -154,84 +154,9 @@ def group_spin_adapt(unfiltered_list):
         key = spin2spatial_key(transition)
         groups.setdefault(key, []).append(transition)
 
-    return list(groups.values())
-
-
-def flatten_excitation(excitation):
-    """
-    Flattens excitations from ((hole), (excitation)), eg ((0, 1), (2, 3)) to (hole, excitation) (0, 1, 2, 3)
-    to match the input parameters of UCC_Circuit
-    """
-    holes, particles = excitation
-    return tuple(holes) + tuple(particles)
-
-
-def sort_excitations(excitations_list):
-    """
-    Previous sorting method used chemical rules to sort excitations, but not too practical
-    for many excitations. New sorting function sorts a list of grouped excitations in lexicographic order 
-    because it is more practical. Sorting is just to ensure engineering consistency.
-
-    INPUT:
-        A list of grouped excitations:
-        [[(0, 1, 2, 3), (0, 1, 4, 5)], [(0, 1, 5, 6), (0, 1, 7, 8)], ... ]
-    OUTPUT:
-        Same list, but sorted by lexicographic token order 
-    * Groups are first sorted lexicographically so this process will be deterministic 
-    """
-    # Flattens the grouped excitations
-    def group_token(group):
-        canonical_group = sorted(group)
-        token = []
-        for excitation in canonical_group:
-            token.extend(excitation)
-        return tuple(token)
-    
-    return sorted(excitations_list, key=group_token)
-
-
-"""
-Other utility functions for ansatzes
-"""
-def mp2_amplitude(excitation, orbital_energies, tei):
-    r"""
-    Calculate the MP2 guess amplitude for a single UCC circuit: 0.0 for a single excitation.
-        for a double excitation (In SO basis): :math:`t_{ij}^{ab} = (g_{ijab} - g_{ijba}) / (e_i + e_j - e_a - e_b)`
-
-    Args:
-        excitation: Iterable of spin-orbitals representing a excitation. Must have either 2 or 4 elements exactly,
-            representing a single or double excitation respectively.
-        orbital_energies: eigenvalues of the Fock operator, i.e. orbital energies
-        tei: Two-electron integrals in MO basis and second quantization notation
-
-    Returns:
-        MP2 guess amplitude (float)
-    """
-    # Checks validity of excitation argument
-    assert len(excitation) % 2 == 0 and len(excitation) // 2 <= 2, f"{excitation} must have either 2 or 4 elements"
-    # If single excitation, can just return 0.0 directly
-    if len(excitation) == 2:
-        return 0.0
-    # Convert orbital indices to be in MO basis
-    mo_orbitals = [orbital // 2 for orbital in excitation]
-    # Numerator: g_ijab - g_ijba
-    g_ijab = (
-        tei[tuple(mo_orbitals)]  # Can index directly using the MO TEIs
-        if (excitation[0] + excitation[3]) % 2 == 0 and (excitation[1] + excitation[2]) % 2 == 0
-        else 0.0
-    )
-    g_ijba = (
-        tei[tuple(mo_orbitals[:2] + mo_orbitals[2:][::-1])]  # Reverse last two terms
-        if (excitation[0] + excitation[2]) % 2 == 0 and (excitation[1] + excitation[3]) % 2 == 0
-        else 0.0
-    )
-    numerator = g_ijab - g_ijba
-    # Denominator is directly from the orbital energies
-    # Guards added against denominator and amplitude to catch nan or inf values
-    denominator = sum(orbital_energies[mo_orbitals[:2]]) - sum(orbital_energies[mo_orbitals[2:]])
-    if abs(denominator) < 1e-12:
-        return 0.0
-    amplitude = numerator / denominator
-    if np.isnan(amplitude):
-        return 0.0
-    return amplitude
+    # Sort the groups itself before returning by holes first then particles
+    # This sorting is done so that later on sorting with ucc uses first term, so its consistent
+    sorted_groups = [sorted(group, key = lambda excitation: (excitation[0], 
+                                                             excitation[1]))
+                     for group in list(groups.values())]
+    return sorted_groups

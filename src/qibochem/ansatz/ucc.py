@@ -6,111 +6,14 @@ from dataclasses import dataclass, field
 
 import numpy as np
 import openfermion
-from qibo import Circuit, gates
+from qibo import Circuit
 from qibo.optimizers import optimize
 
 from qibochem.ansatz.hf_reference import hf_circuit
-from qibochem.ansatz.excitation_util import (generate_excitations, mp2_amplitude, filter_OV_transition, 
-                                             filter_paired, filter_spin, group_spin_adapt, flatten_excitation,
-                                             sort_excitations, filter_cross_excitations)
-
-
-def expi_pauli(n_qubits, pauli_string, theta):
-    """
-    Build circuit representing exp(i*theta*pauli_string)
-
-    Args:
-        n_qubits: No. of qubits in the quantum circuit
-        pauli_string: String in the format: ``"X0 Z1 Y3 X11"``
-        theta: Real number
-
-    Returns:
-        circuit: Qibo Circuit object representing exp(i*theta*pauli_string)
-    """
-    # Split pauli_string into the old p_letters format
-    pauli_ops = sorted(((int(_op[1:]), _op[0]) for _op in pauli_string.split()), key=lambda x: x[0])
-    n_pauli_ops = len(pauli_ops)
-
-    # Convert theta into a real number for applying with a RZ gate
-    rz_parameter = -2.0 * theta
-
-    # Generate the list of basis change gates using the pauli_ops list
-    basis_changes = []
-    for qubit, pauli_op in pauli_ops:
-        if pauli_op == "Y":
-            basis_changes.append(gates.S(qubit).dagger())
-        if pauli_op not in ("I", "Z"):
-            basis_changes.append(gates.H(qubit))
-
-    # Build the circuit
-    circuit = Circuit(n_qubits)
-    # 1. Change to X/Y where necessary
-    circuit.add(basis_changes)
-    # 2. Add CNOTs to all pairs of qubits in pauli_ops, starting from the last letter
-    circuit.add(gates.CNOT(pauli_ops[_i][0], pauli_ops[_i - 1][0]) for _i in range(n_pauli_ops - 1, 0, -1))
-    # 3. Add RZ gate to last element of pauli_ops
-    circuit.add(gates.RZ(pauli_ops[0][0], rz_parameter))
-    # 4. Add CNOTs to all pairs of qubits in pauli_ops
-    circuit.add(gates.CNOT(pauli_ops[_i + 1][0], pauli_ops[_i][0]) for _i in range(n_pauli_ops - 1))
-    # 5. Change back to the Z basis
-    circuit.add(_gate.dagger() for _gate in reversed(basis_changes))
-    return circuit
-
-
-def ucc_circuit(n_qubits, excitation, theta=0.0, trotter_steps=1, ferm_qubit_map=None):
-    r"""
-    Circuit corresponding to the unitary coupled-cluster ansatz for a single excitation
-
-    Args:
-        n_qubits (int): Number of qubits in the quantum circuit
-        excitation (list): Iterable of orbitals involved in the excitation; must have an even number of elements
-            E.g. ``[0, 1, 2, 3]`` represents the excitation of electrons in orbitals ``(0, 1)`` to ``(2, 3)``
-        theta (float): UCC parameter. Defaults to 0.0
-        trotter_steps (int): Number of Trotter steps; i.e. number of times the UCC ansatz is applied
-            with :math:`\theta = \theta` / ``trotter_steps``. Default: 1
-        ferm_qubit_map (str): Fermion-to-qubit transformation. Default is Jordan-Wigner (``"jw"``).
-
-    Returns:
-        :class:`qibo.models.circuit.Circuit`: Circuit corresponding to a single UCC excitation
-    """
-    # Check size of orbitals input
-    n_operators = len(excitation)
-    assert n_operators % 2 == 0, f"{excitation} must have an even number of items"
-
-    # Define default mapping
-    if ferm_qubit_map is None:
-        ferm_qubit_map = "jw"
-
-    # Define the UCC excitation operator corresponding to the given list of orbitals
-    fermion_op_str_template = f"{(n_operators//2)*'{}^ '}{(n_operators//2)*'{} '}"
-    fermion_operator_str = fermion_op_str_template.format(*excitation)
-    # Build the FermionOperator and make it unitary
-    fermion_operator = openfermion.FermionOperator(fermion_operator_str)
-    ucc_operator = fermion_operator - openfermion.hermitian_conjugated(fermion_operator)
-
-    # Map the FermionOperator to a QubitOperator
-    if ferm_qubit_map == "jw":
-        qubit_ucc_operator = openfermion.jordan_wigner(ucc_operator)
-    elif ferm_qubit_map == "bk":
-        qubit_ucc_operator = openfermion.bravyi_kitaev(ucc_operator)
-    else:
-        raise KeyError("Fermon-to-qubit mapping must be either 'jw' or 'bk'")
-    
-    # Apply the qubit_ucc_operator 'trotter_steps' times:
-    assert trotter_steps > 0, f"{trotter_steps} must be > 0!"
-    circuit = Circuit(n_qubits)
-    for _i in range(trotter_steps):
-        # Use the get_operators() generator to get the list of excitation operators
-        for raw_pauli_string in qubit_ucc_operator.get_operators():
-            # Convert each operator into a string and get the associated coefficient
-            ((pauli_ops, coeff),) = raw_pauli_string.terms.items()  # Unpack the single-item dictionary
-            pauli_string = " ".join(f"{pauli_op[1]}{pauli_op[0]}" for pauli_op in pauli_ops)
-            # Build the circuit and add it on
-            _circuit = expi_pauli(
-                n_qubits, pauli_string, -1.0j * coeff * theta / trotter_steps
-            )  # Divide imag. coeff by 1.0j
-            circuit += _circuit
-    return circuit
+from qibochem.ansatz.excitation_util import (generate_excitations, filter_OV_transition, filter_paired, 
+                                             filter_spin, group_spin_adapt, filter_cross_excitations)
+from qibochem.ansatz.ucc_util import (ucc_circuit, mp2_amplitude, excitation2qubit_observable)
+from qibochem.driver.observables import qubit_operator2observable
 
 """
 Use a UCCAnsatz class instead to create the UCC ansatz circuit and run VQE optimisation
@@ -130,7 +33,6 @@ class UCCAnsatz:
     include_hf: bool = True
     use_mp2_guess: bool = True
     param_excitations: dict = field(init=False)
-    # Maybe modify in the future to allow users to add in own excitation parameters
     param_map: dict = field(init=False)
 
     def __post_init__(self):
@@ -144,12 +46,12 @@ class UCCAnsatz:
                        else self.mol.n_active_orbs)
         """
         Here the param_excitations is a unique dictionary that maps to each ansatz 
-        param_excitaitons format {"s0": [(0, 2), "s1": [(1, 3)....]}
+        param_excitaitons format {"s0": [((0,), (2,)), "s1": [((1,), (3,))....]}
         parm_map is a dictionary that maps each parameter to the coefficients of the 
-        corresponding excitations in the circuit.
+        corresponding CIRCUIT parameters.
         """
 
-        self.param_excitations = self.excitations()
+        self.param_excitations = self.excitations() # Ansatz specific excitations, defined at subclass 
         self.param_map = self._get_param_map()
         self.param_names = list(self.param_excitations.keys())
 
@@ -181,6 +83,10 @@ class UCCAnsatz:
 
     def _generate_ansatz_excitations(self, rank, generalised, spin_conserve, paired, spin_adapt,
                                      parallel_excitations=True):
+        """
+        Helper function for self.excitations()
+        This function allows for the mix and match of different anstaz filters for each subclass
+        """
         excitations = generate_excitations(rank, self.n_orbs)
         if not generalised:
             excitations = filter_OV_transition(excitations, self.n_elec, self.n_orbs)
@@ -195,19 +101,18 @@ class UCCAnsatz:
         else:
             # Group the excitations regardless to preserve data structure
             grouped_excitations = [[excitation] for excitation in excitations] 
-        # Flatten excitations to pass into UCC_Circuit 
-        flattened_grouped_excitations = [[flatten_excitation(excitation) for excitation in group]
-                                            for group in grouped_excitations]
-        # Sort the groups 
-        sorted_flattened_groups = sort_excitations(flattened_grouped_excitations)
+        # Sort the groups by the FIRST group term, holes first, then particles
+        sorted_groups = sorted(grouped_excitations,
+                               key = lambda group_excitation: (group_excitation[0][0], # Sort by holes
+                                                               group_excitation[0][1])) # Sort by particles
         rank_map = {1: "s", 2: "d", 3: "t", 4: "q"}
         label = (f"{rank_map[rank]}"
                  f"{'g' if generalised else ''}"
                  f"{'s' if spin_adapt else ''}"
                  f"{'p' if paired else ''}")
-        # Sort the excitations 
+        # Label the excitations from before with standardise labels
         return {f"{label}{count}": excitation
-                for count, excitation in enumerate(sorted_flattened_groups)}
+                for count, excitation in enumerate(sorted_groups)}
 
     def _build_circuit(self, param_values):
         # Default should be true to include the HF state 
@@ -227,26 +132,17 @@ class UCCAnsatz:
     # Function to map the param_excitations into the corresponding CIRCUIT parameters
     # Outputs the coefficients of each circuit parameter relative to the ansatz parameters
     def _get_param_map(self):
+        """
+        Function to map the param_excitations into the corresponding CIRCUIT parameters
+        Outputs the coefficients of each circuit parameter relative to the ansatz parameters
+        """
         param_map = {}
         for name, excitations in self.param_excitations.items():
             param_map[name] = []
             # Excitations can be a list of excitations with grouped paramaeters (tied together) for spin adapt ansatz
             for excitation in excitations:
-                # Excitation is one flattened list of excitations 
-                n_orbitals = len(excitation)
-                sorted_orbitals = sorted(excitation, reverse=True)
-                # Create the anti hermitian operator string 
-                fermion_op_str_template = f"{(n_orbitals // 2) * '{}^ '}{(n_orbitals // 2) * '{} '}"
-                fermion_operator_str = fermion_op_str_template.format(*sorted_orbitals)
-                fermion_operator = openfermion.FermionOperator(fermion_operator_str)
-                ucc_operator = fermion_operator - openfermion.hermitian_conjugated(fermion_operator)
-                if self.ferm_qubit_map == "jw":
-                    qubit_ucc_operator = openfermion.jordan_wigner(ucc_operator)
-                elif self.ferm_qubit_map == "bk":
-                    qubit_ucc_operator = openfermion.bravyi_kitaev(ucc_operator)
-                else:
-                    raise KeyError("Fermon-to-qubit mapping must be either 'jw' or 'bk'")
-                # Double check this for other trotter steps ?? 
+                # Convert excitation into qubit operator
+                qubit_ucc_operator = excitation2qubit_observable(excitation, ferm_qubit_map=self.ferm_qubit_map)
                 for _ in range(self.trotter_steps):
                     for raw_pauli_string in qubit_ucc_operator.get_operators():
                         ((_pauli_ops, coeff),) = raw_pauli_string.terms.items()
@@ -286,7 +182,8 @@ class UCCAnsatz:
     """
 
     def run_vqe(self, protocol, method="BFGS", **optimizer_kwargs):
-        self.hamiltonian = self.mol.hamiltonian("sym", ferm_qubit_map=self.ferm_qubit_map)
+        # Get the bitmask hamiltonian from qubit hamiltonian to run VQE
+        self.hamiltonian = qubit_operator2observable(self.mol.hamiltonian("qubit", ferm_qubit_map=self.ferm_qubit_map))
         # Convert the initial parameters (dictionary) into a vector form for the optimizer
         initial_vector = np.array([self.initial_params[name] for name in self.param_names])
         # The vector that optimize uses is length equal to number of ANSATZ parameters 

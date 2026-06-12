@@ -1,5 +1,14 @@
+import os
 import time
 from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+OUTPUT_DIR = SCRIPT_DIR / "data" / "output"
+
+if "MPLCONFIGDIR" not in os.environ:
+    matplotlib_dir = OUTPUT_DIR / ".matplotlib"
+    matplotlib_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["MPLCONFIGDIR"] = str(matplotlib_dir)
 
 from qibochem.ansatz.ucc import (
     Ansatz_UCCGSD,
@@ -65,9 +74,8 @@ def completed_sv_keys(sv_file):
 
 
 def main():
-    script_dir = Path(__file__).resolve().parent
-    input_dir = script_dir / "data" / "28_mols"
-    output_dir = script_dir / "data" / "output"
+    input_dir = SCRIPT_DIR / "data" / "28_mols"
+    output_dir = OUTPUT_DIR
     hs_dir = output_dir / "HS_data"
     excitation_maps_dir = output_dir / "excitation_maps"
     vqe_params_file = output_dir / "VQE_Params.jsonl"
@@ -134,11 +142,9 @@ def main():
                     ferm_qubit_map=FERM_QUBIT_MAP,
                     map_threshold=MAP_THRESHOLD,
                 )
-                qse = get_excitation_map(
+                get_excitation_map(
                     qse,
                     excitation_map_file,
-                    num_active_o,
-                    expansion,
                     log,
                     **metadata,
                 )

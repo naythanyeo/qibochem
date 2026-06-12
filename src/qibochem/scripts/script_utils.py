@@ -56,11 +56,12 @@ def load_molecule(xyz_path, num_active_e, num_active_o, log=None, **metadata):
     return mol
 
 
-def get_excitation_map(qse, excitation_map_file, num_active_o, expansion, log, **metadata):
+def get_excitation_map(qse, excitation_map_file, log, **metadata):
     if excitation_map_file.exists() and excitation_map_file.stat().st_size > 0:
         start = time.perf_counter()
         with excitation_map_file.open("rb") as fp:
-            qse.excitation_map = pickle.load(fp)["excitation_map"]
+            excitation_map = pickle.load(fp)
+        qse.excitation_map = excitation_map.get("excitation_map", excitation_map)
         log("excitation_map_load", time.perf_counter() - start, **metadata)
     else:
         if qse.operators is None:
@@ -68,31 +69,13 @@ def get_excitation_map(qse, excitation_map_file, num_active_o, expansion, log, *
 
         start = time.perf_counter()
         qse._build_excitation_map()
-        map_entry = {
-            "num_active_o": num_active_o,
-            "expansion": expansion,
-            "ferm_qubit_map": qse.ferm_qubit_map,
-            "map_threshold": qse.map_threshold,
-            "excitation_map": qse.excitation_map,
-        }
         with excitation_map_file.open("wb") as fp:
-            pickle.dump(map_entry, fp)
+            pickle.dump(qse.excitation_map, fp)
         log("excitation_map_build", time.perf_counter() - start, **metadata)
 
     start = time.perf_counter()
     qse._reconstruct_HS_from_map()
     log("qse_reconstruct_hs", time.perf_counter() - start, **metadata)
-    return qse
-
-
-def ansatz_signature(ansatz):
-    return {
-        name: [
-            [float(weight), [list(holes), list(particles)]]
-            for weight, (holes, particles) in excitations
-        ]
-        for name, excitations in ansatz.param_excitations.items()
-    }
 
 
 def get_vqe_circuit(
@@ -115,7 +98,6 @@ def get_vqe_circuit(
 
     ansatz = ansatz_function(mol, ferm_qubit_map=ferm_qubit_map)
     param_names = list(ansatz.param_names)
-    signature = ansatz_signature(ansatz)
 
     cache_start = time.perf_counter()
     for record in reversed(read_jsonl(vqe_params_file)):
@@ -124,7 +106,6 @@ def get_vqe_circuit(
             and record["active_space"] == active_space
             and record["ansatz"] == ansatz_name
             and record.get("param_names") == param_names
-            and record.get("ansatz_signature") == signature
         ):
             ansatz._set_params(record["vqe_params"])
             log("vqe_cached", time.perf_counter() - cache_start, **metadata)
@@ -158,7 +139,6 @@ def get_vqe_circuit(
             "ansatz": ansatz_name,
             "vqe_energy": float(vqe_energy),
             "param_names": param_names,
-            "ansatz_signature": signature,
             "vqe_params": {key: float(value) for key, value in vqe_params.items()},
         },
     )

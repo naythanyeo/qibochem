@@ -1,5 +1,5 @@
 import numpy as np
-from itertools import product, combinations
+from itertools import product, combinations, permutations
 """
 EXCITATION GENERATION FUNCTIONS 
 These set of excitation generators enumerate all possibilities so it is easier to build generalised ansatz too 
@@ -143,16 +143,26 @@ def group_spin_adapt(unfiltered_list):
     This method accounts for all the symmetry issues from before. 
     """
     
-    def spin2spatial_key(transition):
+    def spin2spatial_keys(transition):
         holes, particles= transition
-        spatial_lines = [(h // 2, p // 2)
-                         for h, p in zip(holes, particles)]
-        return tuple(sorted(spatial_lines))
+        keys = []
+        for permuted_particles in permutations(particles):
+            # Allow for all possible transitions first, but check for same spin
+            # In the case where both electrons are up spin for eg, both transitions
+            # are allowed and must be considered (two valid keys)
+            if not all(h % 2 == p % 2 for h, p in zip(holes, permuted_particles)):
+                continue
+            spatial_lines = [(h // 2, p // 2)
+                             for h, p in zip(holes, permuted_particles)]
+            key = tuple(sorted(spatial_lines))
+            if key not in keys:
+                keys.append(key)
+        return keys
 
     groups = {}
     for transition in unfiltered_list:
-        key = spin2spatial_key(transition)
-        groups.setdefault(key, []).append(transition)
+        for key in spin2spatial_keys(transition):
+            groups.setdefault(key, []).append(transition)
 
     # Sort the groups itself before returning by holes first then particles
     # This sorting is done so that later on sorting with ucc uses first term, so its consistent

@@ -1,0 +1,181 @@
+import json
+import pickle
+import re
+import time
+from datetime import datetime
+
+import numpy as np
+from qibo.optimizers import optimize
+
+from qibochem.driver.molecule import Molecule
+from qibochem.driver.observables import qubit_operator2observable
+
+
+class Logger:
+    def __init__(self, path):
+        self.path = path
+
+    def __call__(self, stage, seconds, **metadata):
+        metadata_text = " ".join(f"{key}={value}" for key, value in metadata.items())
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with self.path.open("a") as fp:
+            fp.write(f"{timestamp} | {stage} | seconds={seconds:.6f} | {metadata_text}\n")
+
+
+def read_jsonl(path):
+    if not path.exists():
+        return []
+    with path.open() as fp:
+        return [json.loads(line) for line in fp if line.strip()]
+
+
+def append_jsonl(path, record):
+    with path.open("a") as fp:
+        fp.write(json.dumps(record) + "\n")
+
+
+def parse_active_space(active_space):
+    match = re.fullmatch(r"(\d+)e(\d+)o", active_space.lower())
+    if match is None:
+        raise ValueError("active_space must use the format '<electrons>e<orbitals>o'.")
+    return int(match.group(1)), int(match.group(2))
+
+
+def load_molecule(xyz_path, num_active_e, num_active_o, log=None, **metadata):
+    start = time.perf_counter()
+    mol = Molecule(xyz_file=str(xyz_path), basis="sto-3g")
+    mol.run_pyscf()
+
+    active_mo_start = mol.nelec // 2 - num_active_e // 2
+    active_mos = list(range(active_mo_start, active_mo_start + num_active_o))
+    frozen_mos = [mo for mo in range(mol.nelec // 2) if mo not in active_mos]
+    mol.hf_embedding(active=active_mos, frozen=frozen_mos)
+
+    if log is not None:
+        log("pyscf_and_embedding", time.perf_counter() - start, **metadata)
+    return mol
+
+
+def get_excitation_map(qse, excitation_map_file, num_active_o, expansion, log, **metadata):
+    if excitation_map_file.exists() and excitation_map_file.stat().st_size > 0:
+        start = time.perf_counter()
+        with excitation_map_file.open("rb") as fp:
+            qse.excitation_map = pickle.load(fp)["excitation_map"]
+        log("excitation_map_load", time.perf_counter() - start, **metadata)
+    else:
+        if qse.operators is None:
+            qse.operators = qse.excitation_generator(qse.excitation_params)
+
+        start = time.perf_counter()
+        qse._build_excitation_map()
+        map_entry = {
+            "num_active_o": num_active_o,
+            "expansion": expansion,
+            "ferm_qubit_map": qse.ferm_qubit_map,
+            "map_threshold": qse.map_threshold,
+            "excitation_map": qse.excitation_map,
+        }
+        with excitation_map_file.open("wb") as fp:
+            pickle.dump(map_entry, fp)
+        log("excitation_map_build", time.perf_counter() - start, **metadata)
+
+    start = time.perf_counter()
+    qse._reconstruct_HS_from_map()
+    log("qse_reconstruct_hs", time.perf_counter() - start, **metadata)
+    return qse
+
+
+def ansatz_signature(ansatz):
+    return {
+        name: [
+            [float(weight), [list(holes), list(particles)]]
+            for weight, (holes, particles) in excitations
+        ]
+        for name, excitations in ansatz.param_excitations.items()
+    }
+
+
+def get_vqe_circuit(
+    mol,
+    molecule_name,
+    active_space,
+    ansatz_name,
+    ansatz_function,
+    protocol,
+    vqe_params_file,
+    log,
+    ferm_qubit_map="jw",
+    optimizer_method="L-BFGS-B",
+):
+    metadata = {
+        "molecule": molecule_name,
+        "active_space": active_space,
+        "ansatz": ansatz_name,
+    }
+
+    ansatz = ansatz_function(mol, ferm_qubit_map=ferm_qubit_map)
+    param_names = list(ansatz.param_names)
+    signature = ansatz_signature(ansatz)
+
+    cache_start = time.perf_counter()
+    for record in reversed(read_jsonl(vqe_params_file)):
+        if (
+            record["molecule"] == molecule_name
+            and record["active_space"] == active_space
+            and record["ansatz"] == ansatz_name
+            and record.get("param_names") == param_names
+            and record.get("ansatz_signature") == signature
+        ):
+            ansatz._set_params(record["vqe_params"])
+            log("vqe_cached", time.perf_counter() - cache_start, **metadata)
+            return ansatz.circuit.copy(deep=True)
+
+    hamiltonian = qubit_operator2observable(
+        mol.hamiltonian("q", ferm_qubit_map=ferm_qubit_map),
+        n_qubits=mol.n_active_orbs,
+    )
+    initial_vector = np.array([ansatz.initial_params[name] for name in ansatz.param_names])
+
+    def energy(theta_vector):
+        ansatz._set_params(ansatz._vector2params(theta_vector))
+        return float(np.real(protocol.evaluate(ansatz.circuit, hamiltonian)))
+
+    start = time.perf_counter()
+    vqe_energy, optimised_vector, _ = optimize(
+        energy,
+        initial_vector,
+        method=optimizer_method,
+    )
+    log("vqe_optimisation", time.perf_counter() - start, **metadata, optimizer=optimizer_method)
+
+    vqe_params = ansatz._vector2params(optimised_vector)
+    ansatz._set_params(vqe_params)
+    append_jsonl(
+        vqe_params_file,
+        {
+            "molecule": molecule_name,
+            "active_space": active_space,
+            "ansatz": ansatz_name,
+            "vqe_energy": float(vqe_energy),
+            "param_names": param_names,
+            "ansatz_signature": signature,
+            "vqe_params": {key: float(value) for key, value in vqe_params.items()},
+        },
+    )
+    return ansatz.circuit.copy(deep=True)
+
+
+def save_sv_qse_record(path, molecule, active_space, ansatz, expansion, H, S):
+    append_jsonl(
+        path,
+        {
+            "molecule": molecule,
+            "active_space": active_space,
+            "ansatz": ansatz,
+            "expansion": expansion,
+            "h_matrix_real": np.real(H).tolist(),
+            "h_matrix_imag": np.imag(H).tolist(),
+            "s_matrix_real": np.real(S).tolist(),
+            "s_matrix_imag": np.imag(S).tolist(),
+        },
+    )

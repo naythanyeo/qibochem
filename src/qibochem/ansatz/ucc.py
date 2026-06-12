@@ -58,7 +58,7 @@ class UCCAnsatz:
         # Define initial parameters, if mp2 is false then default to zeros 
         # Here the parameters are stored as a dictionary {s0: 0.3, s1: 0.2...}
         if self.use_mp2_guess:
-            self.initial_params = {name: mp2_amplitude(excitations[0], self.mol.eps, self.mol.tei)
+            self.initial_params = {name: mp2_amplitude(excitations[0][1], self.mol.eps, self.mol.tei)
                                    for name, excitations in self.param_excitations.items()}
         else:
             self.initial_params = {name: 0.0 for name in self.param_names}
@@ -100,19 +100,22 @@ class UCCAnsatz:
             grouped_excitations = group_spin_adapt(excitations)
         else:
             # Group the excitations regardless to preserve data structure
-            grouped_excitations = [[excitation] for excitation in excitations] 
+            grouped_excitations = [[(1.0, excitation)] for excitation in excitations] 
         # Sort the groups by the FIRST group term, holes first, then particles
+        # grouped_excitation has the form [(coeff, excitation1), (coeff, excitation2)..]
+        # [0][1][0] means [Use the first group as key][Take the excitation][Holes first]
+        # [0][1][1] means [Use the first group as key][Take the excitation][Particles later]
         sorted_groups = sorted(grouped_excitations,
-                               key = lambda group_excitation: (group_excitation[0][0], # Sort by holes
-                                                               group_excitation[0][1])) # Sort by particles
+                               key = lambda group_excitation: (group_excitation[0][1][0], # Sort by holes
+                                                               group_excitation[0][1][1])) # Sort by particles
         rank_map = {1: "s", 2: "d", 3: "t", 4: "q"}
         label = (f"{rank_map[rank]}"
                  f"{'g' if generalised else ''}"
                  f"{'s' if spin_adapt else ''}"
                  f"{'p' if paired else ''}")
         # Label the excitations from before with standardise labels
-        return {f"{label}{count}": excitation
-                for count, excitation in enumerate(sorted_groups)}
+        return {f"{label}{count}": weighted_excitations
+                for count, weighted_excitations in enumerate(sorted_groups)}
 
     def _build_circuit(self, param_values):
         # Default should be true to include the HF state 
@@ -145,12 +148,13 @@ class UCCAnsatz:
         Should allow for input of coefficients for each group then take note of those coeff
         """
         param_map = {}
-        for name, excitations in self.param_excitations.items():
+        for name, weighted_excitations in self.param_excitations.items():
             param_map[name] = []
             # Excitations can be a list of excitations with grouped paramaeters (tied together) for spin adapt ansatz
-            for excitation in excitations:
+            for weighted_excitation in weighted_excitations:
                 # Convert excitation into qubit operator
-                qubit_ucc_operator = excitation2qubit_observable(excitation, ferm_qubit_map=self.ferm_qubit_map)
+                qubit_ucc_operator = excitation2qubit_observable(weighted_excitation, 
+                                                                 ferm_qubit_map=self.ferm_qubit_map)
                 for _ in range(self.trotter_steps):
                     for raw_pauli_string in qubit_ucc_operator.get_operators():
                         ((_, coeff),) = raw_pauli_string.terms.items()

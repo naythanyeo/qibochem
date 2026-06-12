@@ -47,10 +47,11 @@ def expi_pauli(n_qubits, pauli_string, theta):
     circuit.add(_gate.dagger() for _gate in reversed(basis_changes))
     return circuit
 
-def excitation2qubit_observable(excitation, ferm_qubit_map='jw'):
+def excitation2qubit_observable(weighted_excitation, ferm_qubit_map='jw'):
     """
     Function to convert excitation into a qubit operator
     """
+    group_weight, excitation = weighted_excitation
     # Group the excitation into open fermion form
     holes, particles = excitation
     fermion_operator_str = "".join(
@@ -59,7 +60,9 @@ def excitation2qubit_observable(excitation, ferm_qubit_map='jw'):
     )
     # Build the FermionOperator and make it unitary
     fermion_operator = openfermion.FermionOperator(fermion_operator_str)
-    ucc_operator = fermion_operator - openfermion.hermitian_conjugated(fermion_operator)
+    ucc_operator = group_weight * (
+        fermion_operator - openfermion.hermitian_conjugated(fermion_operator)
+    )
 
     # Map the FermionOperator to a QubitOperator
     if ferm_qubit_map == "jw":
@@ -70,14 +73,15 @@ def excitation2qubit_observable(excitation, ferm_qubit_map='jw'):
         raise KeyError("Fermon-to-qubit mapping must be either 'jw' or 'bk'")
     return qubit_ucc_operator
 
-def ucc_circuit(n_qubits, excitation, theta=0.0, trotter_steps=1, ferm_qubit_map='jw'):
-    r"""
+def ucc_circuit(n_qubits, weighted_excitation, theta=0.0, trotter_steps=1, ferm_qubit_map='jw'):
+    """
     Circuit corresponding to the unitary coupled-cluster ansatz for a single excitation
 
     Args:
         n_qubits (int): Number of qubits in the quantum circuit
-        excitation (list): Iterable of orbitals involved in the excitation; must have an even number of elements
-            E.g. ``[0, 1, 2, 3]`` represents the excitation of electrons in orbitals ``(0, 1)`` to ``(2, 3)``
+        weighted_excitation (list of (weights, excitation)): 
+            Iterable of orbitals involved in the excitation; must have an even number of elements
+            E.g. ``[coeff, (holes), (particles)]``
         theta (float): UCC parameter. Defaults to 0.0
         trotter_steps (int): Number of Trotter steps; i.e. number of times the UCC ansatz is applied
             with :math:`\theta = \theta` / ``trotter_steps``. Default: 1
@@ -86,10 +90,11 @@ def ucc_circuit(n_qubits, excitation, theta=0.0, trotter_steps=1, ferm_qubit_map
     Returns:
         :class:`qibo.models.circuit.Circuit`: Circuit corresponding to a single UCC excitation
     """
+
     # Check validity of excitation
-    assert len(excitation[0]) == len(excitation[1]), f"{excitation} must have same number of holes and particles"
+    assert len(weighted_excitation[1][0]) == len(weighted_excitation[1][1]), f"{weighted_excitation} must have same number of holes and particles"
     # Get the qubit operator
-    qubit_ucc_operator = excitation2qubit_observable(excitation, ferm_qubit_map)
+    qubit_ucc_operator = excitation2qubit_observable(weighted_excitation, ferm_qubit_map)
     # Apply the qubit_ucc_operator 'trotter_steps' times:
     assert trotter_steps > 0, f"{trotter_steps} must be > 0!"
     circuit = Circuit(n_qubits)

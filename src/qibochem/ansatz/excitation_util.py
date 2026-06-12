@@ -143,9 +143,19 @@ def group_spin_adapt(unfiltered_list):
     This method accounts for all the symmetry issues from before. 
     """
     
+    def permutation_sign(original, permuted):
+        positions = [original.index(item) for item in permuted]
+        inversions = sum(
+            positions[i] > positions[j]
+            for i in range(len(positions))
+            for j in range(i + 1, len(positions))
+        )
+        return -1 if inversions % 2 else 1
+
     def spin2spatial_keys(transition):
         holes, particles= transition
         keys = []
+        seen_keys = set()
         for permuted_particles in permutations(particles):
             # Allow for all possible transitions first, but check for same spin
             # In the case where both electrons are up spin for eg, both transitions
@@ -155,18 +165,32 @@ def group_spin_adapt(unfiltered_list):
             spatial_lines = [(h // 2, p // 2)
                              for h, p in zip(holes, permuted_particles)]
             key = tuple(sorted(spatial_lines))
-            if key not in keys:
-                keys.append(key)
+            if key not in seen_keys:
+                seen_keys.add(key)
+                keys.append((key, permutation_sign(particles, permuted_particles)))
         return keys
 
     groups = {}
     for transition in unfiltered_list:
-        for key in spin2spatial_keys(transition):
-            groups.setdefault(key, []).append(transition)
+        for key, sign in spin2spatial_keys(transition):
+            groups.setdefault(key, []).append((transition, sign))
 
-    # Sort the groups itself before returning by holes first then particles
-    # This sorting is done so that later on sorting with ucc uses first term, so its consistent
-    sorted_groups = [sorted(group, key = lambda excitation: (excitation[0], 
-                                                             excitation[1]))
-                     for group in list(groups.values())]
-    return sorted_groups
+    # Normalise and sort the groups.
+    normalised_groups = []
+    for _, group in groups.items():
+        sorted_group = sorted(group, key = lambda item: (item[0][0], item[0][1]))
+        rank = len(sorted_group[0][0][0])
+        # For singles
+        if rank == 1:
+            normalised_groups.append([(1.0, excitation)
+                                      for excitation, _ in sorted_group])
+            continue
+        # If there is only 1 group
+        if len(sorted_group) == 1:
+            norm_coeff = 1.0
+        else:
+            norm_coeff = 1 / np.sqrt(2 * len(sorted_group))
+        # Append the normalised coefficients
+        normalised_groups.append([(-norm_coeff * sign, excitation)
+                                  for excitation, sign in sorted_group])
+    return normalised_groups

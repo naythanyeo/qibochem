@@ -12,7 +12,8 @@ from qibo.optimizers import optimize
 from qibochem.ansatz.hf_reference import hf_circuit
 from qibochem.ansatz.excitation_util import (generate_excitations, filter_OV_transition, filter_paired, 
                                              filter_spin, group_spin_adapt, filter_cross_excitations)
-from qibochem.ansatz.ucc_util import (ucc_circuit, mp2_amplitude, excitation2qubit_observable)
+from qibochem.ansatz.ucc_util import (ucc_circuit, excitation2qubit_observable,
+                                      mp2_guess_amplitudes)
 from qibochem.driver.observables import qubit_operator2observable
 
 """
@@ -28,6 +29,7 @@ Ansatz construction is more easily done here also by defining param_excitations
 class UCCAnsatz:
     mol: object
     final_params: dict | None = None
+    guess_amplitudes: dict | None = None
     ferm_qubit_map: str = "jw"
     trotter_steps: int = 1
     include_hf: bool = True
@@ -35,6 +37,17 @@ class UCCAnsatz:
     param_excitations: dict = field(init=False)
     param_map: dict = field(init=False)
 
+    """
+    DEFINE: 
+    Params: sd0, sd1 ... 
+    Amplitudes: (0,), (1, 2)
+    The class can be specified with amplitudes of each transition. Amplitudes do NOT
+    need to match the parameters. Conversion of amplitudes to parameter coefficients 
+    can be called with helper function _amplitudes2parameters 
+
+    Amplitudes can be specified so the transitions from other ansatz can or MP2 can be
+    used as initial parameter guesses, so that optimisation is faster. 
+    """
     def __post_init__(self):
         # Follow the active space definitions from the mol object
         self.n_elec = (self.mol.nelec
@@ -50,31 +63,37 @@ class UCCAnsatz:
         parm_map is a dictionary that maps each parameter to the coefficients of the 
         corresponding CIRCUIT parameters.
         """
-
         self.param_excitations = self.excitations() # Ansatz specific excitations, defined at subclass 
         self.param_map = self._get_param_map()
         self.param_names = list(self.param_excitations.keys())
 
-        # Define initial parameters, if mp2 is false then default to zeros 
-        # Here the parameters are stored as a dictionary {s0: 0.3, s1: 0.2...}
-        if self.use_mp2_guess:
-            self.initial_params = {name: mp2_amplitude(excitations[0][1], self.mol.eps, self.mol.tei)
-                                   for name, excitations in self.param_excitations.items()}
-        else:
-            self.initial_params = {name: 0.0 for name in self.param_names}
+        """
+        First the class checks if the final_parameters are specified. If they are,
+        then the final circuit is just built and the other steps are skipped 
+        The final parameters must match the param_excitations exactly 
 
-        # Build the initial circuit with initial parameters
-        # After optimisation, then final parameters will be set and final_circuit will be built 
-        self.circuit = self._build_circuit(self.initial_params)
-        self.final_circuit = None
-
-        # Here, if the final params is already set, then final_circuit will be built 
-        # If input final_params, ansatz object will treat it as optimised coefficients 
+        If there are no final parameters, check if initial amplitude is given. If provided,
+        then the initial_parameters can be constructed with them. If not guess all zeros.
+        """
         if self.final_params is not None:
-            self._set_params(self.final_params)
+            # Check that the final parameters match the ansatz
+            if list(self.final_params.keys()) != self.param_names:
+                raise ValueError("Input parameters must match Ansatz Type")
+            self.circuit = self._build_circuit(self.final_params)
             self.final_circuit = self.circuit.copy(deep=True)
-        # Here if you set the final parameters, should be able to call directly 
-        # VQE_circuit = UCC_Ansatz.final_circuit --> Pass this circuit into QSE / others 
+        else: 
+            if self.guess_amplitudes is not None:
+                self.initial_params = self._amplitudes2params()
+            elif self.use_mp2_guess:
+                self.guess_amplitudes = mp2_guess_amplitudes(
+                    self.param_excitations,
+                    self.mol,
+                )
+                self.initial_params = self._amplitudes2params()
+            else:
+                self.initial_params = {name: 0.0 for name in self.param_names}
+            self.circuit = self._build_circuit(self.initial_params)
+
 
     def excitations(self):
         raise NotImplementedError(
@@ -143,9 +162,10 @@ class UCCAnsatz:
         So this param map naturally stores all the mapped coefficients to calculate the 
         proper circuit coefficients at each cycle. 
 
-        NOTE: For future implmentation, the excitations here are NOT tied to coefficients, so
-        grouping of spin adapt is really more tying down spin complements / singlet adapt 
-        Should allow for input of coefficients for each group then take note of those coeff
+        NOTE: This map is used for set params because the parameters update must target each circuit
+        parameter. However, for build_circuit, it can be called without this map because UCC_Circuit
+        will create all the required gates. However, its too time costly to re build the circuit multiple
+        times especially during VQE because there will be many updates for each optimisation cycle.
         """
         param_map = {}
         for name, weighted_excitations in self.param_excitations.items():
@@ -181,11 +201,32 @@ class UCCAnsatz:
     def _vector2params(self, theta_vector):
         return {name: theta for name, theta in zip(self.param_names, theta_vector)}
 
+    def _amplitudes2params(self):
+        initial_params = {name: 0.0 for name in self.param_names}
+        guess_amplitudes = self.guess_amplitudes
+
+        for name, weighted_excitations in self.param_excitations.items():
+            numerator = 0.0
+            denominator = 0.0
+
+            for weight, excitation in weighted_excitations:
+                amplitude = guess_amplitudes.get(excitation, 0.0)
+
+                numerator += weight * amplitude
+                denominator += weight * weight
+
+            if abs(denominator) < 1e-12:
+                initial_params[name] = 0.0
+            else:
+                initial_params[name] = numerator / denominator
+
+        return initial_params
+
     # Function for the optimiser to reconstruct the circuit and get expectation value of the hamiltonian
     def _get_energy(self, theta_vector):
         self._set_params(self._vector2params(theta_vector))
-        return self.protocol.evaluate(self.circuit, self.hamiltonian)
-    
+        energy = self.protocol.evaluate(self.circuit, self.hamiltonian)
+        return np.real(energy)
 
     """
     Function to run VQE optimisation
@@ -194,6 +235,10 @@ class UCCAnsatz:
     """
 
     def run_vqe(self, protocol, method="BFGS", **optimizer_kwargs):
+        # Run_vqe will fail if final parametesr are set because initial paramters is not defined
+        if self.final_params is not None:
+            raise RuntimeError("VQE cannot be run after final parameters are set." \
+                               "Input Guess_amplitdues to input initial guess")
         # Get the bitmask hamiltonian from qubit hamiltonian to run VQE
         self.hamiltonian = qubit_operator2observable(self.mol.hamiltonian("qubit", ferm_qubit_map=self.ferm_qubit_map))
         # Convert the initial parameters (dictionary) into a vector form for the optimizer

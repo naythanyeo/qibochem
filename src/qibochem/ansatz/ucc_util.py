@@ -160,3 +160,26 @@ def mp2_amplitude(excitation, orbital_energies, tei):
     if not np.isfinite(amplitude):
         return 0.0
     return amplitude
+
+
+def mp2_guess_amplitudes(param_excitations, mol):
+    eps = np.asarray(mol.eps)[mol.active] if mol.active is not None else mol.eps
+    tei = mol.embed_tei if mol.embed_tei is not None else mol.tei
+
+    guess_amplitudes = {}
+    for weighted_excitations in param_excitations.values():
+        for _, excitation in weighted_excitations:
+            holes, particles = excitation
+            if len(holes) == 2:
+                guess_amplitudes[excitation] = -mp2_amplitude(excitation, eps, tei)
+
+    return guess_amplitudes
+
+
+def params2amplitudes(param_values, param_excitations):
+    amplitudes = {}
+    for name, weighted_excitations in param_excitations.items():
+        theta = param_values[name]
+        for weight, excitation in weighted_excitations:
+            amplitudes[excitation] = amplitudes.get(excitation, 0.0) + weight * theta
+    return amplitudes

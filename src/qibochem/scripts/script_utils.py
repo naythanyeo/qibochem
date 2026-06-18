@@ -5,10 +5,9 @@ import time
 from datetime import datetime
 
 import numpy as np
-from qibo.optimizers import optimize
 
 from qibochem.driver.molecule import Molecule
-from qibochem.driver.observables import qubit_operator2observable
+from qibochem.ansatz.ucc_util import params2amplitudes
 
 
 class Logger:
@@ -89,6 +88,7 @@ def get_vqe_circuit(
     log,
     ferm_qubit_map="jw",
     optimizer_method="L-BFGS-B",
+    guess_amplitudes=None,
 ):
     metadata = {
         "molecule": molecule_name,
@@ -96,7 +96,11 @@ def get_vqe_circuit(
         "ansatz": ansatz_name,
     }
 
-    ansatz = ansatz_function(mol, ferm_qubit_map=ferm_qubit_map)
+    ansatz = ansatz_function(
+        mol,
+        ferm_qubit_map=ferm_qubit_map,
+        guess_amplitudes=guess_amplitudes,
+    )
     param_names = list(ansatz.param_names)
 
     cache_start = time.perf_counter()
@@ -109,28 +113,20 @@ def get_vqe_circuit(
         ):
             ansatz._set_params(record["vqe_params"])
             log("vqe_cached", time.perf_counter() - cache_start, **metadata)
-            return ansatz.circuit.copy(deep=True)
-
-    hamiltonian = qubit_operator2observable(
-        mol.hamiltonian("q", ferm_qubit_map=ferm_qubit_map),
-        n_qubits=mol.n_active_orbs,
-    )
-    initial_vector = np.array([ansatz.initial_params[name] for name in ansatz.param_names])
-
-    def energy(theta_vector):
-        ansatz._set_params(ansatz._vector2params(theta_vector))
-        return float(np.real(protocol.evaluate(ansatz.circuit, hamiltonian)))
+            next_guess_amplitudes = params2amplitudes(
+                record["vqe_params"],
+                ansatz.param_excitations,
+            )
+            return ansatz.circuit.copy(deep=True), next_guess_amplitudes
 
     start = time.perf_counter()
-    vqe_energy, optimised_vector, _ = optimize(
-        energy,
-        initial_vector,
+    vqe_energy, vqe_params, final_circuit = ansatz.run_vqe(
+        protocol,
         method=optimizer_method,
+        fast=True,
     )
     log("vqe_optimisation", time.perf_counter() - start, **metadata, optimizer=optimizer_method)
 
-    vqe_params = ansatz._vector2params(optimised_vector)
-    ansatz._set_params(vqe_params)
     append_jsonl(
         vqe_params_file,
         {
@@ -142,7 +138,8 @@ def get_vqe_circuit(
             "vqe_params": {key: float(value) for key, value in vqe_params.items()},
         },
     )
-    return ansatz.circuit.copy(deep=True)
+    next_guess_amplitudes = params2amplitudes(vqe_params, ansatz.param_excitations)
+    return final_circuit, next_guess_amplitudes
 
 
 def save_sv_qse_record(path, molecule, active_space, ansatz, expansion, H, S):

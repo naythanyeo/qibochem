@@ -54,10 +54,10 @@ MAP_THRESHOLD = 1e-12
 OPTIMIZER_METHOD = "L-BFGS-B"
 
 ANSATZ_FUNCTIONS = {
-    "UCCSD": Ansatz_UCCSD,
-    "UCCSDSinglet": Ansatz_UCCSDSinglet,
-    "UCCGSD": Ansatz_UCCGSD,
     "1UpCCGSDSinglet": lambda molecule, **kwargs: Ansatz_kUpCCGSDSinglet(molecule, k=1, **kwargs),
+    "UCCSDSinglet": Ansatz_UCCSDSinglet,
+    "UCCSD": Ansatz_UCCSD,
+    "UCCGSD": Ansatz_UCCGSD,
 }
 
 QSE_EXPANSIONS = {
@@ -149,14 +149,11 @@ def main():
                     **metadata,
                 )
 
+                guess_amplitudes = None
                 for ansatz_name, ansatz_function in ANSATZ_FUNCTIONS.items():
                     sv_key = (molecule_name, active_space, ansatz_name, expansion)
-                    if sv_key in sv_done[active_space]:
-                        print(f"{molecule_name} {active_space} {ansatz_name} {expansion}: SV done, skipping")
-                        continue
-
                     ansatz_start = time.perf_counter()
-                    final_circuit = get_vqe_circuit(
+                    final_circuit, guess_amplitudes = get_vqe_circuit(
                         mol,
                         molecule_name,
                         active_space,
@@ -167,7 +164,12 @@ def main():
                         log,
                         ferm_qubit_map=FERM_QUBIT_MAP,
                         optimizer_method=OPTIMIZER_METHOD,
+                        guess_amplitudes=guess_amplitudes,
                     )
+
+                    if sv_key in sv_done[active_space]:
+                        print(f"{molecule_name} {active_space} {ansatz_name} {expansion}: SV done, skipping")
+                        continue
 
                     start = time.perf_counter()
                     h_matrix, s_matrix = qse.run_qse(final_circuit, sv_protocol)

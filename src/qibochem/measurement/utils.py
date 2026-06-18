@@ -3,6 +3,8 @@
 from collections import defaultdict
 from collections.abc import Mapping
 
+import numpy as np
+
 from qibochem.driver.observables import BitmaskObservable
 
 
@@ -36,15 +38,21 @@ def format_output(full_observables_data):
     return dict(full_observables_data)
 
 
-def get_final_state(circuit):
-    """Run the circuit if necessary and return its statevector."""
-    if circuit is None:
-        raise ValueError("Specify a circuit to evaluate.")
+def get_final_state(circuit_or_state):
+    """Return a statevector from either a circuit or a statevector input."""
+    if circuit_or_state is None:
+        raise ValueError("Specify a circuit or statevector to evaluate.")
 
-    if circuit._final_state is None:
-        circuit()
+    if not hasattr(circuit_or_state, "_final_state"):
+        final_state = np.asarray(circuit_or_state, dtype=complex)
+        if final_state.ndim != 1:
+            raise ValueError("Statevector input must be one-dimensional.")
+        return final_state
 
-    return circuit._final_state.state()
+    if circuit_or_state._final_state is None:
+        circuit_or_state()
+
+    return circuit_or_state._final_state.state()
 
 
 def collect_global_terms(observables):

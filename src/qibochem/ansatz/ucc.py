@@ -12,9 +12,10 @@ from qibo.optimizers import optimize
 from qibochem.ansatz.hf_reference import hf_circuit
 from qibochem.ansatz.excitation_util import (generate_excitations, filter_OV_transition, filter_paired, 
                                              filter_spin, group_spin_adapt, filter_cross_excitations)
+from qibochem.ansatz.ucc_fast_eval import apply_ucc_rotations, get_hf_bit_state
 from qibochem.ansatz.ucc_util import (ucc_circuit, excitation2qubit_observable,
                                       mp2_guess_amplitudes)
-from qibochem.driver.observables import qubit_operator2observable
+from qibochem.driver.observables import qubit_operator2observable, qubit_term2bitmask
 
 """
 Use a UCCAnsatz class instead to create the UCC ansatz circuit and run VQE optimisation
@@ -36,6 +37,7 @@ class UCCAnsatz:
     use_mp2_guess: bool = True
     param_excitations: dict = field(init=False)
     param_map: dict = field(init=False)
+    fast_rotations: list = field(init=False)
 
     """
     DEFINE: 
@@ -182,6 +184,24 @@ class UCCAnsatz:
                         param_map[name].append(gate_coeff)
         return param_map
 
+    def _get_fast_rotations(self):
+        rotations = []
+
+        for param_index, name in enumerate(self.param_names):
+            for weighted_excitation in self.param_excitations[name]:
+                qubit_ucc_operator = excitation2qubit_observable(
+                    weighted_excitation,
+                    ferm_qubit_map=self.ferm_qubit_map,
+                )
+                for _ in range(self.trotter_steps):
+                    for raw_pauli_string in qubit_ucc_operator.get_operators():
+                        ((pauli_ops, coeff),) = raw_pauli_string.terms.items()
+                        bitmask = qubit_term2bitmask(pauli_ops, n_qubits=self.n_orbs)
+                        angle_coeff = np.real(-1.0j * coeff / self.trotter_steps)
+                        rotations.append((param_index, bitmask, angle_coeff))
+
+        return rotations
+
     # Get the circuit parameters given parameters in the dictionary form
     def _get_circuit_parameters(self, param_values):
         circuit_params = []
@@ -227,6 +247,12 @@ class UCCAnsatz:
         self._set_params(self._vector2params(theta_vector))
         energy = self.protocol.evaluate(self.circuit, self.hamiltonian)
         return np.real(energy)
+    
+    def _get_fast_energy(self, theta_vector):
+        hf_state = get_hf_bit_state(self.n_orbs, self.n_elec)
+        state = apply_ucc_rotations(hf_state, theta_vector, self.fast_rotations)
+        energy = self.protocol.evaluate(state, self.hamiltonian)
+        return np.real(energy)
 
     """
     Function to run VQE optimisation
@@ -234,7 +260,7 @@ class UCCAnsatz:
     Finds the optimal parameters and constructs the final circuit
     """
 
-    def run_vqe(self, protocol, method="BFGS", **optimizer_kwargs):
+    def run_vqe(self, protocol, method="BFGS", fast=True, **optimizer_kwargs):
         # Run_vqe will fail if final parametesr are set because initial paramters is not defined
         if self.final_params is not None:
             raise RuntimeError("VQE cannot be run after final parameters are set." \
@@ -246,7 +272,12 @@ class UCCAnsatz:
         # The vector that optimize uses is length equal to number of ANSATZ parameters 
         # The variable circuit_params contains the FULL CIRCUIT parameters 
         self.protocol = protocol # Set self attribute protocol for get_energy to run
-        vqe_energy, optimised_vector, extra = optimize(self._get_energy, initial_vector, 
+        if fast:
+            self.fast_rotations = self._get_fast_rotations()
+            energy_fn = self._get_fast_energy
+        else:
+            energy_fn = self._get_energy
+        vqe_energy, optimised_vector, extra = optimize(energy_fn, initial_vector, 
                                                        method=method, **optimizer_kwargs)
         # Convert the outut optimised vector back into parameter dictionary form
         self.final_params = self._vector2params(optimised_vector)

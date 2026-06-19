@@ -1,3 +1,4 @@
+import gc
 import os
 import time
 from pathlib import Path
@@ -142,12 +143,15 @@ def main():
                     ferm_qubit_map=FERM_QUBIT_MAP,
                     map_threshold=MAP_THRESHOLD,
                 )
+                # Re constructs H S here
                 get_excitation_map(
                     qse,
                     excitation_map_file,
                     log,
                     **metadata,
                 )
+                # Delete excitation map
+                qse.excitation_map = None
 
                 guess_amplitudes = None
                 for ansatz_name, ansatz_function in ANSATZ_FUNCTIONS.items():
@@ -169,6 +173,8 @@ def main():
 
                     if sv_key in sv_done[active_space]:
                         print(f"{molecule_name} {active_space} {ansatz_name} {expansion}: SV done, skipping")
+                        del final_circuit
+                        gc.collect()
                         continue
 
                     start = time.perf_counter()
@@ -186,8 +192,18 @@ def main():
                     )
                     sv_done[active_space].add(sv_key)
                     log("ansatz_total", time.perf_counter() - ansatz_start, **metadata, ansatz=ansatz_name)
+                    # Clear large matrices
+                    del final_circuit
+                    del h_matrix
+                    del s_matrix
+                    gc.collect()
 
                 log("molecule_expansion_total", time.perf_counter() - molecule_start, **metadata)
+                # Delete computable object and clear ram
+                del qse
+                del mol
+                del guess_amplitudes
+                gc.collect()
 
 
 if __name__ == "__main__":

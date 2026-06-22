@@ -3,7 +3,20 @@ from collections.abc import Mapping
 
 import numpy as np
 from numpy import linalg as la
+import pickle
+from pathlib import Path
 
+def pickle2dict(pickle_file_path):
+    with open(pickle_file_path, "rb") as fp:
+        data = pickle.load(fp)
+    return data
+
+
+def dict2pickle(pickle_data, pickle_file_path):
+    path = Path(pickle_file_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "wb") as fp:
+        pickle.dump(pickle_data, fp, protocol=pickle.HIGHEST_PROTOCOL)
 
 def assemble_hs(values):
     if not values:

@@ -1,5 +1,4 @@
 import json
-import pickle
 import re
 import time
 from datetime import datetime
@@ -53,28 +52,6 @@ def load_molecule(xyz_path, num_active_e, num_active_o, log=None, **metadata):
     if log is not None:
         log("pyscf_and_embedding", time.perf_counter() - start, **metadata)
     return mol
-
-
-def get_excitation_map(qse, excitation_map_file, log, **metadata):
-    if excitation_map_file.exists() and excitation_map_file.stat().st_size > 0:
-        start = time.perf_counter()
-        with excitation_map_file.open("rb") as fp:
-            excitation_map = pickle.load(fp)
-        qse.excitation_map = excitation_map.get("excitation_map", excitation_map)
-        log("excitation_map_load", time.perf_counter() - start, **metadata)
-    else:
-        if qse.operators is None:
-            qse.operators = qse.excitation_generator(qse.excitation_params)
-
-        start = time.perf_counter()
-        qse._build_excitation_map()
-        with excitation_map_file.open("wb") as fp:
-            pickle.dump(qse.excitation_map, fp)
-        log("excitation_map_build", time.perf_counter() - start, **metadata)
-
-    start = time.perf_counter()
-    qse._reconstruct_HS_from_map()
-    log("qse_reconstruct_hs", time.perf_counter() - start, **metadata)
 
 
 def get_vqe_circuit(

@@ -20,7 +20,6 @@ from qibochem.ansatz.ucc import (
 from qibochem.measurement.protocol import StateVectorProtocol
 from qibochem.scripts.script_utils import (
     Logger,
-    get_excitation_map,
     get_vqe_circuit,
     load_molecule,
     parse_active_space,
@@ -35,7 +34,7 @@ from qibochem.selected_ci.qse import (
 
 # qibo.set_backend("qibojit", platform="cuda")
 
-ACTIVE_SPACES = ["2e2o", "2e3o", "4e3o", "4e4o"]
+ACTIVE_SPACES = ["4e5o"]
 
 """
 "4e5o", "6e5o", "6e6o", "6e7o", "8e7o", "8e8o"
@@ -78,13 +77,13 @@ def main():
     input_dir = SCRIPT_DIR / "data" / "28_mols"
     output_dir = OUTPUT_DIR
     hs_dir = output_dir / "HS_data"
-    excitation_maps_dir = output_dir / "excitation_maps"
+    qse_cache_dir = output_dir / "qse_cache"
     vqe_params_file = output_dir / "VQE_Params.jsonl"
     timing_file = output_dir / "SV_Timings.log"
 
     output_dir.mkdir(parents=True, exist_ok=True)
     hs_dir.mkdir(parents=True, exist_ok=True)
-    excitation_maps_dir.mkdir(parents=True, exist_ok=True)
+    qse_cache_dir.mkdir(parents=True, exist_ok=True)
 
     log = Logger(timing_file)
     sv_protocol = StateVectorProtocol()
@@ -109,8 +108,6 @@ def main():
         sv_file = hs_dir / f"SV_HS_{active_space}.jsonl"
 
         for expansion, excitation_generator in QSE_EXPANSIONS.items():
-            excitation_map_file = excitation_maps_dir / f"{num_active_o}o_{expansion}.pkl"
-
             for molecule_name in MOLECULE_NAMES:
                 molecule_expansion_keys = {
                     (molecule_name, active_space, ansatz_name, expansion)
@@ -136,22 +133,16 @@ def main():
                     **metadata,
                 )
 
+                molecule_qse_cache_dir = qse_cache_dir / active_space / expansion / molecule_name
                 qse = QSE_Computable(
                     mol,
                     excitation_generator=excitation_generator,
                     spin_projection=0,
                     ferm_qubit_map=FERM_QUBIT_MAP,
                     map_threshold=MAP_THRESHOLD,
+                    h_cache_path=str(molecule_qse_cache_dir / "H.pkl"),
+                    s_cache_path=str(molecule_qse_cache_dir / "S.pkl"),
                 )
-                # Re constructs H S here
-                get_excitation_map(
-                    qse,
-                    excitation_map_file,
-                    log,
-                    **metadata,
-                )
-                # Delete excitation map
-                qse.excitation_map = None
 
                 guess_amplitudes = None
                 for ansatz_name, ansatz_function in ANSATZ_FUNCTIONS.items():

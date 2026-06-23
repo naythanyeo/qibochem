@@ -97,21 +97,21 @@ Not too hard to implement but need a general observable class to manages this
 @dataclass
 class QSE_Computable:
     molecule: object
+    # Excitations
     excitation_generator: Callable
     spin_projection: int | str = 0 # Can be 0 -1 1 or "all"
+    excitation_params: dict | None = field(default=None, init=False)
+    operators: list | None = field(default=None, init=False)
+    # Params
     ferm_qubit_map: str = "jw"
-
     map_threshold: float = 1e-12
-
+    # Caching
     s_cache_path: str | None = None
     h_cache_path: str | None = None
-    h_map_cache_path: str | None = None
-
-
-    operators: list | None = field(default=None, init=False)
+    # Storing observables
     s_data: dict | None = field(default=None, init=False)
     h_data: dict | None = field(default=None, init=False)
-    excitation_params: dict | None = field(default=None, init=False)
+    
 
     def __post_init__(self):
         """Validate QSE inputs and define the excitation generator parameters."""
@@ -130,41 +130,7 @@ class QSE_Computable:
             "spin_projection": self.spin_projection,
         }
     
-    
-    def _get_labeled_hamiltonian(self):
-        """
-        Function to generate a labeled hamiltonian form to cache the QSE terms 
-        For every molecule, can re-use the QSE map by reconstructing from OEI and TEI terms
-        instead of performing repeated JW conversion multiple times. 
-        For consistency, input n_orbs is the number of spin orbitals
-        Output will be a list of tuples in the form [(label, operator), ...]
-        
-        Spin rules: for OEI the spin of both must be same because h doesnt act on spinnors, 
-        so spin-orbitlas with opposite spin will automatically be orthogonal 
-        For TEI, g = int (Xp(1)Xq(2) 1/r12 Xr(2)Xs(1)) so p and s must have same spin, 
-        and q and r must have same spin, otherwise the term is 0.
-        """
-        n_spin_orbitals = self.excitation_params["n_orbs"]
-        labeled_hamiltonian = [
-            (("constant",), openfermion.FermionOperator((), 1.0))
-        ]
-        # OEI terms
-        for p, q in product(range(n_spin_orbitals), repeat=2):
-            if p%2 != q%2: 
-                continue # Skip all the spin flip OEI terms because they are 0
-            label = ("oei", p , q)
-            # Create p and destroy q
-            operator = openfermion.FermionOperator(((p, 1), (q, 0)), 1) 
-            labeled_hamiltonian.append((label, operator))
-        # TEI terms
-        for p, q, r, s in product(range(n_spin_orbitals), repeat=4):
-            if p%2 != s%2 or q%2 != r%2:
-                continue # Skip all the spin flip TEI terms because they are 0
-            label = ("tei", p , q, r, s)
-            # Create p and q, destroy r and s
-            operator = openfermion.FermionOperator(((p, 1), (q, 1), (r, 0), (s, 0)), 1)
-            labeled_hamiltonian.append((label, operator))
-        return labeled_hamiltonian
+
 
     def _map_ferm2bitmask(self, projected):
         """
@@ -178,58 +144,13 @@ class QSE_Computable:
             q_op = openfermion.bravyi_kitaev(projected)
         else:
             raise ValueError("ferm_qubit_map must be 'jw' or 'bk'.")
+        
         # Use a threshold smaller than main threhsold for map construction because the map terms can be
         # summed up across hpq and hpqrs terms, so we keep terms 2 orders of magnitude smaller to be safe
         q_op.compress(abs_tol=self.map_threshold * 1e-2)
         # Last stage map the qubit operator to a bitmask observable
         return qubit_operator2observable(q_op, n_qubits=self.excitation_params["n_orbs"])
 
-    def _reconstruct_H_ij_from_map(self, H_map):
-        """
-        Function to reconstruct the H matrix from a H_map for a given molecule
-        The excitation map stores in qubit representation, but H data will be in bitmask observable form.
-        Reconstruct the qubit terms first from the OEI and TEI terms, then convert into bitmask observable form.
-        
-        H_map has the form {label: observables}
-        """
-        # First get all the OEI and TEI terms needed
-        # This part is almost copying molecule.hamiltonian("f")
-        oei = self.molecule.oei if self.molecule.embed_oei is None else self.molecule.embed_oei
-        tei = self.molecule.tei if self.molecule.embed_tei is None else self.molecule.embed_tei
-        constant = 0.0 if self.molecule.inactive_energy is None else self.molecule.inactive_energy
-        constant += self.molecule.e_nuc
-
-        oei = self.molecule._filter_array(oei, self.map_threshold)
-        tei = self.molecule._filter_array(tei, self.map_threshold)
-        oei_so, tei_so = openfermion.ops.representations.get_tensors_from_integrals(oei, tei)
-
-        # Mini helper function to match the qubit operator labels to constant, OEI and TEI values
-        def integral_value(label):
-            if label[0] == "constant":
-                return constant
-            if label[0] == "oei":
-                _, p, q = label
-                return oei_so[p, q]
-            if label[0] == "tei":
-                _, p, q, r, s = label
-                return tei_so[p, q, r, s]
-            raise ValueError(f"Unknown Hamiltonian label: {label}")
-
-        h_constant = 0.0
-        terms = defaultdict(complex)
-        # Doesnt use the default bitmask observable add function because of overhead cost
-        for label, template_observable in H_map:
-            integral = integral_value(label)
-            h_constant += integral * template_observable.constant
-            for term, coeff in template_observable.terms.items():
-                terms[term] += integral * coeff
-        # Re build the bitmask observable back at the end
-        # Filter away the small terms lower than map threshold
-        H_compressed = BitmaskObservable(constant=h_constant if abs(h_constant) > self.map_threshold else 0.0,
-                                         terms={term: coeff for term, coeff in terms.items()
-                                            if abs(coeff) > self.map_threshold})
-        return H_compressed
-    
     def _get_Ei_Ej(self, i, j):
         ferm_Ei_dag = openfermion.hermitian_conjugated(self.operators[i])
         ferm_Ej = self.operators[j]
@@ -239,26 +160,12 @@ class QSE_Computable:
 
     def _get_S_ij(self, i, j):
         """
-        Get the Ei and Ej first
-        Do bitmask multiplication 
+        Get a term of Sij
         """
-        bitmask_Ei, bitmask_Ej = self._get_Ei_Ej(i, j)
-        return multiply_bitmask_observables(bitmask_Ei, bitmask_Ej, threshold=self.map_threshold)
-    
-    def _get_H_map_ij(self, i, j, labeled_hamiltonian):
-        """
-        Get a term of the excitaiton map of H
-        """
-        bitmask_Ei, bitmask_Ej = self._get_Ei_Ej(i, j)
-        labeled_projected_hamiltonian = {}
-        for label, ferm_ham in labeled_hamiltonian:
-            bitmask_ham = self._map_ferm2bitmask(ferm_ham)
-            left_prod = multiply_bitmask_observables(bitmask_Ei, bitmask_ham, 
-                                                     threshold=self.map_threshold * 1e-2)
-            label_projected_ham = multiply_bitmask_observables(left_prod, bitmask_Ej, 
-                                                                threshold=self.map_threshold * 1e-2)
-            labeled_projected_hamiltonian[label] = label_projected_ham
-        return labeled_projected_hamiltonian
+        bitmask_Ei_dag, bitmask_Ej = self._get_Ei_Ej(i, j)
+        projected_S = multiply_bitmask_observables(bitmask_Ei_dag, bitmask_Ej, 
+                                                   threshold=self.map_threshold)
+        return projected_S
 
     def _get_H_ij_direct(self, i, j, ferm_hamiltonian):
         """
@@ -267,27 +174,30 @@ class QSE_Computable:
         bitmask_Ei, bitmask_Ej = self._get_Ei_Ej(i, j)
         bitmask_ham = self._map_ferm2bitmask(ferm_hamiltonian)
         left_prod = multiply_bitmask_observables(bitmask_Ei, bitmask_ham, 
-                                                 threshold=self.map_threshold * 1e-2)
+                                                 threshold=self.map_threshold * 1e-2) # intermediate threshold
         projected_ham = multiply_bitmask_observables(left_prod, bitmask_Ej, 
-                                                            threshold=self.map_threshold * 1e-2)
+                                                            threshold=self.map_threshold)
         return projected_ham
 
     def _prepare_s_data(self):
         """
-        Load S Datat from cache path is its available
+        Load S Data from cache path is its available
         If not build S data and optionally cache it
         """
+        # First check if S cache map exist
         if self.s_cache_path is not None:
             path = Path(self.s_cache_path)
             if path.exists():
                 self.s_data = pickle2dict(self.s_cache_path)
                 return
+            
         # If not build in the s_matrix
         dim = len(self.operators)
         for i, j in product(range(dim), repeat=2):
             if i > j: 
-                continue # Only build upper triangle, will mirror for lower triangle later
+                continue # Only build upper triangle
             self.s_data[(i, j)] = self._get_S_ij(i, j)
+
         # Optional caching if the cache path is provided
         if self.s_cache_path is not None:
             dict2pickle(self.s_data, self.s_cache_path)
@@ -295,56 +205,26 @@ class QSE_Computable:
 
     def _prepare_h_data(self):
         """
-        Function main goal is to build self.h_data
-        First checks if the molecule specific map is provided 
-        Also checks if the individual excitation map is provided, cache excitation maps if given
-        If no cache paths are provided, then directly builds H_data from hamiltonian isntead of labeled hamiltonian
+        Load H data from cache path if its available
+        If not build H data from fermionic hamiltonian and optionally cache it
         """
-        # First check if the molecule specific H map is provided
+        # First check if H cache map exist
         if self.h_cache_path is not None:
             path = Path(self.h_cache_path)
             if path.exists():
                 self.h_data = pickle2dict(self.h_cache_path)
                 return
-        
+            
+        # If not build the h_matrix
         dim = len(self.operators)
-        # If it doesnt exist, then check if the caching of excitation map is wanted
-        if self.h_map_cache_path is not None:
-            """
-            Here we build the individual elements from the cache because the RAM can quickly explode 
-            The individual hamiltonian terms are huge for large active space, so the cached files are huge also
-            Loading in the full excitation map before compression is not RAM safe
-            It is definitely slower because more overhead of constantly referencing zip file but good trade off for RAM
+        ferm_hamiltonian = self.molecule.hamiltonian("f")
+        for i, j in product(range(dim), repeat=2):
+            if i > j:
+                continue # Only build upper triangular
+            H_ij = self._get_H_ij_direct(i, j, ferm_hamiltonian)
+            self.h_data[(i, j)] = H_ij
 
-            In this case h_map_cache_path expected is a folder path
-            """
-            labeled_hamiltonian = self._get_labeled_hamiltonian()
-            for i, j in product(range(dim), repeat=2):
-                if i > j:
-                    continue # Only build upper triangular
-                # Check if the file exists
-                map_ij_path = Path(self.h_map_cache_path+f"/H_{i}_{j}.pkl")
-                if map_ij_path.exists():
-                    h_observable_map = pickle2dict(map_ij_path)
-                # If it doesnt exist, then make the map and immediately cache it
-                else:
-                    h_observable_map = self._get_H_map_ij(i, j, labeled_hamiltonian)
-                    dict2pickle(h_observable_map, map_ij_path)
-                
-                # Use the map to reconstruct the H_ij
-                H_ij = self._reconstruct_H_ij_from_map(h_observable_map)
-                self.h_data[(i, j)] = H_ij
-
-        # If excitation map is not provided, then directly build H data
-        else:
-            ferm_hamiltonian = self.molecule.hamiltonian("f")
-            for i, j in product(range(dim), repeat=2):
-                if i > j:
-                    continue # Only build upper triangular
-                H_ij = self._get_H_ij_direct(i, j, ferm_hamiltonian)
-                self.h_data[(i, j)] = H_ij
-
-        # Cache the hamiltonian if path is provided
+        # Optional caching if the cache path is provided
         if self.h_cache_path is not None:
             dict2pickle(self.h_data, self.h_cache_path)
 
@@ -365,12 +245,12 @@ class QSE_Computable:
         self.operators = self.excitation_generator(self.excitation_params)
 
         # Update the H and S observables if they were not done before
-        # This can be reused, IE the QSE computable can be reused for same active space and molecule for 
-        # different ansatz etc. So if re-used, the terms will not be re-collated
-        if self.h_data is None or self.s_data is None:
-            self.h_data, self.s_data = defaultdict(), defaultdict()
-            self._prepare_s_data()
+        if self.h_data is None:
+            self.h_data = defaultdict()
             self._prepare_h_data()
+        if self.s_data is None:
+            self.s_data = defaultdict()
+            self._prepare_s_data()
 
         # Group the H and S observables together into one dictionary so protocol evaluates it at once
         # This is for global commuting terms to be implemented

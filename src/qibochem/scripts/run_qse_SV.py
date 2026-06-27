@@ -34,7 +34,7 @@ from qibochem.selected_ci.qse import (
 
 # qibo.set_backend("qibojit", platform="cuda")
 
-ACTIVE_SPACES = ["4e5o"]
+ACTIVE_SPACES = ["2e2o", "2e3o", "4e3o", "4e4o"]
 
 """
 "4e5o", "6e5o", "6e6o", "6e7o", "8e7o", "8e8o"

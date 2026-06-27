@@ -259,6 +259,10 @@ class QSE_Computable:
         qse_observables.update({("S", *element): observable
                                  for element, observable in self.s_data.items()})
 
+        # Protocol can return the evaluated results as a dictionary of {observable_key: expectation} in SV
+        # For shot measurement protocol, it can also return a nested dictionary of 
+        # {sample_key: {observable_key: expectation}}
+        # Utils functions accounts for both of those cases
         H, S = assemble_matrix_outputs(protocol.evaluate(circuit, qse_observables))
 
         return H, S

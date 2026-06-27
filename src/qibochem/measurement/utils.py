@@ -55,24 +55,16 @@ def get_final_state(circuit_or_state):
     return circuit_or_state._final_state.state()
 
 
-def collect_global_terms(observables):
-    """Collect all nonconstant bitmask terms across all observables."""
+def collect_global_unique_terms(observables):
     global_terms = []
+    seen_terms = set() # For comparison by hashing
 
     for observable in observables.values():
         for term in observable.terms:
-            if term != (0, 0, 0):
-                global_terms.append(term)
+            if term == (0, 0, 0) or term in seen_terms:
+                continue
+
+            seen_terms.add(term)
+            global_terms.append(term)
 
     return global_terms
-
-
-def transpose_group_probabilities(group_probabilities):
-    """Convert {group: {sample: vector}} to {sample: {group: vector}}."""
-    sample_probabilities = defaultdict(dict)
-
-    for group_index, sampled_probabilities in group_probabilities.items():
-        for sample_key, probability_vector in sampled_probabilities.items():
-            sample_probabilities[sample_key][group_index] = probability_vector
-
-    return sample_probabilities

@@ -12,7 +12,7 @@ from qibo.optimizers import optimize
 from qibochem.ansatz.hf_reference import hf_circuit
 from qibochem.ansatz.excitation_util import (generate_excitations, filter_OV_transition, filter_paired, 
                                              filter_spin, group_spin_adapt, filter_cross_excitations)
-from qibochem.ansatz.ucc_fast_eval import apply_ucc_rotations, get_hf_bit_state
+from qibochem.ansatz.ucc_fast_eval import apply_ucc_rotations, get_hf_bit_state, get_pauli_action
 from qibochem.ansatz.ucc_util import (ucc_circuit, excitation2qubit_observable,
                                       mp2_guess_amplitudes)
 from qibochem.driver.observables import qubit_operator2observable, qubit_term2bitmask
@@ -198,7 +198,11 @@ class UCCAnsatz:
                         ((pauli_ops, coeff),) = raw_pauli_string.terms.items()
                         bitmask = qubit_term2bitmask(pauli_ops, n_qubits=self.n_orbs)
                         angle_coeff = np.real(-1.0j * coeff / self.trotter_steps)
-                        rotations.append((param_index, bitmask, angle_coeff))
+                        flipped_states, phase_shift = get_pauli_action(
+                            bitmask,
+                            self._basis_states,
+                        )
+                        rotations.append((param_index, flipped_states, phase_shift, angle_coeff))
 
         return rotations
 
@@ -249,8 +253,7 @@ class UCCAnsatz:
         return np.real(energy)
     
     def _get_fast_energy(self, theta_vector):
-        hf_state = get_hf_bit_state(self.n_orbs, self.n_elec)
-        state = apply_ucc_rotations(hf_state, theta_vector, self.fast_rotations)
+        state = apply_ucc_rotations(self.hf_state, theta_vector, self.fast_rotations)
         energy = self.protocol.evaluate(state, self.hamiltonian)
         return np.real(energy)
 
@@ -272,7 +275,10 @@ class UCCAnsatz:
         # The vector that optimize uses is length equal to number of ANSATZ parameters 
         # The variable circuit_params contains the FULL CIRCUIT parameters 
         self.protocol = protocol # Set self attribute protocol for get_energy to run
+        
         if fast:
+            self.hf_state = get_hf_bit_state(self.n_orbs, self.n_elec)
+            self._basis_states = np.arange(2**self.n_orbs)
             self.fast_rotations = self._get_fast_rotations()
             energy_fn = self._get_fast_energy
         else:

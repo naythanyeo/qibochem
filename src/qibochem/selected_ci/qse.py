@@ -83,22 +83,22 @@ Main changes from before is that now the protocols used for various strategies a
 implemented into protocol.py, so this computable object is more focused on managing
 the QSE-specific logic only. Abit easier to read and control imo. 
 
-Initialised with molecule only, configuration is removed 
+Initialised with molecule and observable only, configuration is removed 
 
 Things like n_shots will be initialised with PROTOCOL, so the logic is kept separate 
 OUTPUT: OBSERVABLE (H) and OVERLAP (S) matrices only 
 
-For future implementation? 
-Treats the QSE computable as a generic projected observable computable 
-By default, the observable is hamiltonian (FOR NOW), but subsequently if you have a 
-different observable like S^2, can initialise QSE observable with other observables instead 
-Not too hard to implement but need a general observable class to manages this
+The observable input will be in fermionic form (openfermion.FermionOperator)
+If not specified, the observable will default to being molecular fermionic hamiltonian
+However, other operators like spin etc can also be called as the observable
+This QSE computable therefore acts more like a generic projected observable class
 """
 @dataclass
 class QSE_Computable:
     molecule: object
     # Excitations
     excitation_generator: Callable
+    observable: object | None = None
     spin_projection: int | str = 0 # Can be 0 -1 1 or "all"
     excitation_params: dict | None = field(default=None, init=False)
     operators: list | None = field(default=None, init=False)
@@ -217,11 +217,11 @@ class QSE_Computable:
             
         # If not build the h_matrix
         dim = len(self.operators)
-        ferm_hamiltonian = self.molecule.hamiltonian("f")
+        ferm_observable = self.observable
         for i, j in product(range(dim), repeat=2):
             if i > j:
                 continue # Only build upper triangular
-            H_ij = self._get_H_ij_direct(i, j, ferm_hamiltonian)
+            H_ij = self._get_H_ij_direct(i, j, ferm_observable)
             self.h_data[(i, j)] = H_ij
 
         # Optional caching if the cache path is provided
@@ -243,6 +243,10 @@ class QSE_Computable:
         """
         # First define the excitation operators.
         self.operators = self.excitation_generator(self.excitation_params)
+
+        # If no observable is specified, default to hamiltonian
+        if self.observable is None:
+            self.observable = self.molecule.hamiltonian("f")
 
         # Update the H and S observables if they were not done before
         if self.h_data is None:

@@ -36,7 +36,7 @@ from qibochem.selected_ci.qse import (
 
 # qibo.set_backend("qibojit", platform="cuda")
 
-ACTIVE_SPACES = ["2e2o", "2e3o", "4e3o", "4e4o", "4e5o"]
+ACTIVE_SPACES = ["2e2o", "2e3o", "4e3o", "4e4o", "4e5o", "6e5o"]
 
 """
 "4e5o", "6e5o", "6e6o", "6e7o", "8e7o", "8e8o"
@@ -125,11 +125,11 @@ def run_molecule_expansion(
         qse = QSE_Computable(
             molecule=mol,
             excitation_generator=excitation_generator,
-            observable=None,
+            observable=mol.s2_operator(),
             spin_projection=0,
             ferm_qubit_map=FERM_QUBIT_MAP,
             map_threshold=MAP_THRESHOLD,
-            h_cache_path=str(molecule_qse_cache_dir / "H.pkl"),
+            h_cache_path=str(molecule_qse_cache_dir / "S2.pkl"),
             s_cache_path=str(molecule_qse_cache_dir / "S.pkl"),
         )
 
@@ -197,9 +197,9 @@ def main():
     input_dir = SCRIPT_DIR / "data" / "28_mols"
     output_dir = OUTPUT_DIR
     hs_dir = output_dir / "HS_data"
-    qse_cache_dir = output_dir / "qse_cache"
+    qse_cache_dir = output_dir / "qse_spin_cache" / "S2"
     vqe_params_file = output_dir / "VQE_Params.jsonl"
-    timing_file = output_dir / "SV_Timings.log"
+    timing_file = output_dir / "S2_SV_Timings.log"
 
     output_dir.mkdir(parents=True, exist_ok=True)
     hs_dir.mkdir(parents=True, exist_ok=True)
@@ -209,7 +209,7 @@ def main():
     done_lock = Lock()
 
     sv_done = {
-        active_space: completed_sv_keys(hs_dir / f"SV_HS_{active_space}.jsonl")
+        active_space: completed_sv_keys(hs_dir / f"S2_SV_HS_{active_space}.jsonl")
         for active_space in ACTIVE_SPACES
     }
 
@@ -225,7 +225,7 @@ def main():
             continue
 
         num_active_e, num_active_o = parse_active_space(active_space)
-        sv_file = hs_dir / f"SV_HS_{active_space}.jsonl"
+        sv_file = hs_dir / f"S2_SV_HS_{active_space}.jsonl"
 
         for expansion, excitation_generator in QSE_EXPANSIONS.items():
             futures = []

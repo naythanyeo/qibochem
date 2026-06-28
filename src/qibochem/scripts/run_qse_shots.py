@@ -200,8 +200,9 @@ def main():
 
                 molecule_qse_cache_dir = qse_cache_dir / active_space / expansion / molecule_name
                 qse = QSE_Computable(
-                    mol,
+                    molecule=mol,
                     excitation_generator=excitation_generator,
+                    observable=None,
                     spin_projection=0,
                     ferm_qubit_map=FERM_QUBIT_MAP,
                     map_threshold=MAP_THRESHOLD,

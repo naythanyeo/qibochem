@@ -2,11 +2,15 @@ import json
 import re
 import time
 from datetime import datetime
+from threading import Lock
 
 import numpy as np
 
 from qibochem.driver.molecule import Molecule
 from qibochem.ansatz.ucc_util import params2amplitudes
+
+
+FILE_IO_LOCK = Lock()
 
 
 class Logger:
@@ -16,20 +20,23 @@ class Logger:
     def __call__(self, stage, seconds, **metadata):
         metadata_text = " ".join(f"{key}={value}" for key, value in metadata.items())
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        with self.path.open("a") as fp:
-            fp.write(f"{timestamp} | {stage} | seconds={seconds:.6f} | {metadata_text}\n")
+        with FILE_IO_LOCK:
+            with self.path.open("a") as fp:
+                fp.write(f"{timestamp} | {stage} | seconds={seconds:.6f} | {metadata_text}\n")
 
 
 def read_jsonl(path):
     if not path.exists():
         return []
-    with path.open() as fp:
-        return [json.loads(line) for line in fp if line.strip()]
+    with FILE_IO_LOCK:
+        with path.open() as fp:
+            return [json.loads(line) for line in fp if line.strip()]
 
 
 def append_jsonl(path, record):
-    with path.open("a") as fp:
-        fp.write(json.dumps(record) + "\n")
+    with FILE_IO_LOCK:
+        with path.open("a") as fp:
+            fp.write(json.dumps(record) + "\n")
 
 
 def parse_active_space(active_space):

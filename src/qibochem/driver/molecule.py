@@ -16,6 +16,8 @@ from qibochem.driver.hamiltonian import (
     _qubit_to_symbolic_hamiltonian,
 )
 
+from qibochem.driver.spin import sz_operator, s2_operator
+
 
 @dataclass
 class Molecule:
@@ -474,3 +476,19 @@ class Molecule:
         if isinstance(hamiltonian, SymbolicHamiltonian):
             return hamiltonian.eigenvalues()
         raise TypeError("Type of Hamiltonian unknown")
+    
+    """
+    NOTE: for spin operators, it is set to work only on the active space of the molecule 
+    The frozen core is assumed to be paired and fully filled with spin 0 
+    For open shell molecules or frozen cores that are not spin 0, manually define spin operator
+    from spin.py helper functions
+    """
+    def sz_operator(self):
+        """Returns the Spin Projection Fermionic Operators """
+        n_spatial = self.n_active_orbs // 2 if self.n_active_orbs is not None else self.norb
+        return sz_operator(n_spatial)
+    
+    def s2_operator(self):
+        """Returns the total Spin Fermionic Operators"""
+        n_spatial = self.n_active_orbs // 2 if self.n_active_orbs is not None else self.norb
+        return s2_operator(n_spatial)

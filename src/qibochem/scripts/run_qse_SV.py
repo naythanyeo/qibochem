@@ -36,7 +36,7 @@ from qibochem.selected_ci.qse import (
 
 # qibo.set_backend("qibojit", platform="cuda")
 
-ACTIVE_SPACES = ["2e2o", "2e3o", "4e3o", "4e4o", "4e5o"]
+ACTIVE_SPACES = ["2e2o", "2e3o", "4e3o", "4e4o", "4e5o", "6e5o", "6e6o"]
 
 """
 "4e5o", "6e5o", "6e6o", "6e7o", "8e7o", "8e8o"
@@ -63,9 +63,17 @@ ANSATZ_FUNCTIONS = {
     "UCCGSD": Ansatz_UCCGSD,
 }
 
+
+def generate_triplet_all_singles(excitation_params):
+    excitation_params = dict(excitation_params)
+    excitation_params["spin_projection"] = "all"
+    return generate_triplet_singles(excitation_params)
+
+
 QSE_EXPANSIONS = {
     "singlet": generate_singlet_singles,
     "triplet": generate_triplet_singles,
+    "triplet_all": generate_triplet_all_singles,
 }
 
 
@@ -126,7 +134,7 @@ def run_molecule_expansion(
             molecule=mol,
             excitation_generator=excitation_generator,
             observable=None,
-            spin_projection=0,
+            spin_projection="all" if expansion == "triplet_all" else 0,
             ferm_qubit_map=FERM_QUBIT_MAP,
             map_threshold=MAP_THRESHOLD,
             h_cache_path=str(molecule_qse_cache_dir / "H.pkl"),

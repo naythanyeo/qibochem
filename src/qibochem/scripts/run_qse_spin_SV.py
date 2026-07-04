@@ -36,7 +36,7 @@ from qibochem.selected_ci.qse import (
 
 # qibo.set_backend("qibojit", platform="cuda")
 
-ACTIVE_SPACES = ["2e2o", "2e3o", "4e3o", "4e4o", "4e5o", "6e5o"]
+ACTIVE_SPACES = ["2e2o", "2e3o", "4e3o", "4e4o", "4e5o", "6e5o", "6e6o"]
 
 """
 "4e5o", "6e5o", "6e6o", "6e7o", "8e7o", "8e8o"
@@ -54,7 +54,7 @@ MOLECULE_NAMES = [
 FERM_QUBIT_MAP = "jw"
 MAP_THRESHOLD = 1e-12
 OPTIMIZER_METHOD = "L-BFGS-B"
-MAX_WORKERS = 4
+MAX_WORKERS = 1
 
 ANSATZ_FUNCTIONS = {
     "1UpCCGSDSinglet": lambda molecule, **kwargs: Ansatz_kUpCCGSDSinglet(molecule, k=1, **kwargs),
@@ -63,9 +63,17 @@ ANSATZ_FUNCTIONS = {
     "UCCGSD": Ansatz_UCCGSD,
 }
 
+
+def generate_triplet_all_singles(excitation_params):
+    excitation_params = dict(excitation_params)
+    excitation_params["spin_projection"] = "all"
+    return generate_triplet_singles(excitation_params)
+
+
 QSE_EXPANSIONS = {
     "singlet": generate_singlet_singles,
     "triplet": generate_triplet_singles,
+    "triplet_all": generate_triplet_all_singles,
 }
 
 
@@ -126,7 +134,7 @@ def run_molecule_expansion(
             molecule=mol,
             excitation_generator=excitation_generator,
             observable=mol.s2_operator(),
-            spin_projection=0,
+            spin_projection="all" if expansion == "triplet_all" else 0,
             ferm_qubit_map=FERM_QUBIT_MAP,
             map_threshold=MAP_THRESHOLD,
             h_cache_path=str(molecule_qse_cache_dir / "S2.pkl"),

@@ -166,3 +166,5 @@ psi4_output.dat
 
 # vscode
 .vscode/
+
+.DS_Store

@@ -72,7 +72,7 @@ def generate_triplet_all_singles(excitation_params):
 
 QSE_EXPANSIONS = {
     "singlet": generate_singlet_singles,
-    "triplet": generate_triplet_singles,
+    #"triplet": generate_triplet_singles,
     "triplet_all": generate_triplet_all_singles,
 }
 

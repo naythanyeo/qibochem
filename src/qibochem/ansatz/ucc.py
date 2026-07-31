@@ -186,14 +186,21 @@ class UCCAnsatz:
 
     def _get_fast_rotations(self):
         rotations = []
-
+        """
+        Loop through trotter steps first before looping through the weighted excitations
+        param_excitations[name] tie together all the excitations with the same parameter
+        This means trotter is built interleaved convention when paramters are tied
+        Eg for 2 trotter steps use
+        e^(t(A+B)) ~ e^(tA/2)e^(tB/2)e^(tA/2)e^(tB/2)
+        as opposed to e^(tA/2)e^(tA/2)e^(tB/2)e^(tB/2)
+        """
         for param_index, name in enumerate(self.param_names):
-            for weighted_excitation in self.param_excitations[name]:
-                qubit_ucc_operator = excitation2qubit_observable(
-                    weighted_excitation,
-                    ferm_qubit_map=self.ferm_qubit_map,
-                )
-                for _ in range(self.trotter_steps):
+            for _ in range(self.trotter_steps):
+                for weighted_excitation in self.param_excitations[name]:
+                    qubit_ucc_operator = excitation2qubit_observable(
+                                        weighted_excitation,
+                                        ferm_qubit_map=self.ferm_qubit_map,
+                                    )
                     for raw_pauli_string in qubit_ucc_operator.get_operators():
                         ((pauli_ops, coeff),) = raw_pauli_string.terms.items()
                         bitmask = qubit_term2bitmask(pauli_ops, n_qubits=self.n_orbs)

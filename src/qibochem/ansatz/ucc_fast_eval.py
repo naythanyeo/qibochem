@@ -1,4 +1,11 @@
-"""Fast statevector evolution for UCC Pauli rotations."""
+"""
+Fast statevector evolution for UCC Pauli rotations.
+Fast eval uses the qubit operators directly to evolve the given state rather than build 
+the full circuit every time. This is mathematically equivalent, but faster. 
+Caveat is that UCC circuit is still needed if you want to simulate actual hardware noise etc
+because that will account for the gates. But for simple simulation of VQE with many repeated 
+evaluations of the UCC circuit, fast eval is generally recommended
+"""
 
 import numpy as np
 

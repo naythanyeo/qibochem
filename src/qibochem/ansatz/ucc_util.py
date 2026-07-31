@@ -73,42 +73,45 @@ def excitation2qubit_observable(weighted_excitation, ferm_qubit_map='jw'):
         raise KeyError("Fermon-to-qubit mapping must be either 'jw' or 'bk'")
     return qubit_ucc_operator
 
-def ucc_circuit(n_qubits, weighted_excitation, theta=0.0, trotter_steps=1, ferm_qubit_map='jw'):
+def ucc_circuit(n_qubits, weighted_excitation, theta=0.0, ferm_qubit_map='jw'):
     """
-    Circuit corresponding to the unitary coupled-cluster ansatz for a single excitation
+    Helper function that takes in the excitations in fermionic form, maps it into qubits 
+    and then returns a UCC circuit
 
-    Args:
-        n_qubits (int): Number of qubits in the quantum circuit
+    INPUTS:
+        n_qubits (int)
         weighted_excitation (list of (weights, excitation)): 
-            Iterable of orbitals involved in the excitation; must have an even number of elements
+            Iterable of orbitals involved in the excitation
             E.g. ``[coeff, (holes), (particles)]``
-        theta (float): UCC parameter. Defaults to 0.0
-        trotter_steps (int): Number of Trotter steps; i.e. number of times the UCC ansatz is applied
-            with :math:`\theta = \theta` / ``trotter_steps``. Default: 1
-        ferm_qubit_map (str): Fermion-to-qubit transformation. Default is Jordan-Wigner (``"jw"``).
-
+        theta (float): UCC paramter, default to 0.0
+        ferm_qubit_map: "jw" or "bk"
     Returns:
         :class:`qibo.models.circuit.Circuit`: Circuit corresponding to a single UCC excitation
+
+    NOTE:
+    Trotter approximation is not applied here, trotter steps are applied at the build circuit 
+    level in the main UCC class, because of tied paramters. This function just takes whatever
+    gates are given and returns it in that order with default approximation to be 1
+    IE: input A, B --> output e^A e^B
     """
 
     # Check validity of excitation
     assert len(weighted_excitation[1][0]) == len(weighted_excitation[1][1]), f"{weighted_excitation} must have same number of holes and particles"
     # Get the qubit operator
     qubit_ucc_operator = excitation2qubit_observable(weighted_excitation, ferm_qubit_map)
-    # Apply the qubit_ucc_operator 'trotter_steps' times:
-    assert trotter_steps > 0, f"{trotter_steps} must be > 0!"
+
     circuit = Circuit(n_qubits)
-    for _i in range(trotter_steps):
-        # Use the get_operators() generator to get the list of excitation operators
-        for raw_pauli_string in qubit_ucc_operator.get_operators():
-            # Convert each operator into a string and get the associated coefficient
-            ((pauli_ops, coeff),) = raw_pauli_string.terms.items()  # Unpack the single-item dictionary
-            pauli_string = " ".join(f"{pauli_op[1]}{pauli_op[0]}" for pauli_op in pauli_ops)
-            # Build the circuit and add it on
-            _circuit = expi_pauli(
-                n_qubits, pauli_string, -1.0j * coeff * theta / trotter_steps
-            )  # Divide imag. coeff by 1.0j
-            circuit += _circuit
+    # Use the get_operators() generator to get the list of excitation operators
+    for raw_pauli_string in qubit_ucc_operator.get_operators():
+        # Convert each operator into a string and get the associated coefficient
+        ((pauli_ops, coeff),) = raw_pauli_string.terms.items()  # Unpack the single-item dictionary
+        pauli_string = " ".join(f"{pauli_op[1]}{pauli_op[0]}" for pauli_op in pauli_ops)
+        # Build the circuit and add it on
+        _circuit = expi_pauli(
+            n_qubits, pauli_string, -1.0j * coeff * theta
+        )  # Divide imag. coeff by 1.0j
+        circuit += _circuit
+
     return circuit
 
 

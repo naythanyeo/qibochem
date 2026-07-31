@@ -60,6 +60,13 @@ class UCCAnsatz:
                        if self.mol.n_active_orbs is None 
                        else self.mol.n_active_orbs)
         """
+        Check and validate that trotter steps is positive
+        Prevent division by 0 later on
+        """
+        if isinstance(self.trotter_steps, bool) or not isinstance(self.trotter_steps, int) or self.trotter_steps < 1:
+            raise ValueError("Trotter steps must be a positive integer")
+
+        """
         Here the param_excitations is a unique dictionary that maps to each ansatz 
         param_excitaitons format {"s0": [((0,), (2,)), "s1": [((1,), (3,))....]}
         parm_map is a dictionary that maps each parameter to the coefficients of the 
@@ -146,11 +153,13 @@ class UCCAnsatz:
             circuit = Circuit(self.n_orbs)
         # Add on the Gates for every ANSATZ Parameter 
         for name in self.param_names:
-            theta = param_values[name]
-            for excitation in self.param_excitations[name]:
-                circuit += ucc_circuit(self.n_orbs, excitation, theta=theta,
-                                       trotter_steps=self.trotter_steps,
-                                       ferm_qubit_map=self.ferm_qubit_map)
+            # Now apply trotter approximation 
+            theta = param_values[name] / self.trotter_steps
+            for _ in range(self.trotter_steps):
+                for excitation in self.param_excitations[name]:
+                    circuit += ucc_circuit(self.n_orbs, 
+                                           excitation, theta=theta,
+                                           ferm_qubit_map=self.ferm_qubit_map)
         return circuit
 
 
@@ -172,15 +181,18 @@ class UCCAnsatz:
         param_map = {}
         for name, weighted_excitations in self.param_excitations.items():
             param_map[name] = []
-            # Excitations can be a list of excitations with grouped paramaeters (tied together) for spin adapt ansatz
-            for weighted_excitation in weighted_excitations:
-                # Convert excitation into qubit operator
-                qubit_ucc_operator = excitation2qubit_observable(weighted_excitation, 
+            # Apply the trotter steps first like how build circuit does it 
+            for _ in range(self.trotter_steps):
+                # Excitations can be a list of excitations with grouped paramaeters 
+                # (tied together) for spin adapt ansatz
+                for weighted_excitation in weighted_excitations:
+                    # Convert excitation into qubit operator
+                    qubit_ucc_operator = excitation2qubit_observable(weighted_excitation, 
                                                                  ferm_qubit_map=self.ferm_qubit_map)
-                for _ in range(self.trotter_steps):
                     for raw_pauli_string in qubit_ucc_operator.get_operators():
                         ((_, coeff),) = raw_pauli_string.terms.items()
                         gate_coeff = np.real(-2.0 * (-1.0j * coeff) / self.trotter_steps)
+                        # Keep the same order than build_circuit uses, ie trotter first 
                         param_map[name].append(gate_coeff)
         return param_map
 
@@ -193,6 +205,13 @@ class UCCAnsatz:
         Eg for 2 trotter steps use
         e^(t(A+B)) ~ e^(tA/2)e^(tB/2)e^(tA/2)e^(tB/2)
         as opposed to e^(tA/2)e^(tA/2)e^(tB/2)e^(tB/2)
+
+        NOTE:
+        For fast rotations, full circuit is not built to save cost 
+        Instead of converting each qubit observable into circuit gates, it directly applies
+        the observables to the statevector and evolves it in order 
+        Mathematically equivalent to using UCC circuit, but faster 
+        Only means you cannot simulate hardware noise 
         """
         for param_index, name in enumerate(self.param_names):
             for _ in range(self.trotter_steps):

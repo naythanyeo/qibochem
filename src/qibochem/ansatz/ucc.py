@@ -45,6 +45,7 @@ class UCCAnsatz:
     param_excitations: dict = field(init=False)
     param_map: dict = field(init=False)
     fast_rotations: list = field(init=False)
+    use_mat_mul: bool = False
 
     """
     DEFINE: 
@@ -110,7 +111,6 @@ class UCCAnsatz:
                 self.initial_params = {name: rng.random()*np.pi*2 for name in self.param_names}
             elif self.initial_angles is not None:
                 self.initial_params = {name: self.initial_angles[idx] for idx, name in enumerate(self.param_names)}
-
             else:
                 self.initial_params = {name: 0.0 for name in self.param_names}
             self.circuit = self._build_circuit(self.initial_params)
@@ -295,13 +295,19 @@ class UCCAnsatz:
         energy = self.protocol.evaluate(state, self.hamiltonian)
         return np.real(energy)
 
+    def _get_fast_mat_mul_energy(self, theta_vector):
+        raise NotImplementedError(
+            "Function for using fast matrix multiiplication not defined."
+        )
+
+
     """
     Function to run VQE optimisation
     Build on top of qibo.optimize function
     Finds the optimal parameters and constructs the final circuit
     """
 
-    def run_vqe(self, protocol, method="BFGS", fast=True, **optimizer_kwargs):
+    def run_vqe(self, protocol, method="BFGS", fast=True, fast_mat_mul=False, **optimizer_kwargs):
         # Run_vqe will fail if final parametesr are set because initial paramters is not defined
         if self.final_params is not None:
             raise RuntimeError("VQE cannot be run after final parameters are set." \
@@ -313,28 +319,11 @@ class UCCAnsatz:
         # The vector that optimize uses is length equal to number of ANSATZ parameters 
         # The variable circuit_params contains the FULL CIRCUIT parameters 
         self.protocol = protocol # Set self attribute protocol for get_energy to run
-        
-        if fast:
+
+        if self.use_mat_mul and fast_mat_mul:
+            energy_fn = self._get_fast_mat_mul_energy
+        elif fast:
             self.hf_state = get_hf_bit_state(self.n_orbs, self.n_elec)
-
-            # sv_vac = np.zeros((2**self.n_orbs))
-            # sv_vac[0] = 1
-
-            # create HF reference state
-            # if self.perf_pair:
-            #     strlst  = [f"+_{2*i}" for i in range(min(self.no_alpha,-(self.no_spat//-2)))] # -(self.no_spat//-2) does ceiling division
-            #     strlst += [f"+_{2*i+1}" for i in range(min(self.no_alpha+(self.no_spat//-2),self.no_spat//2))] 
-            #     strlst += [f"+_{2*i+self.no_spat}" for i in range(min(self.no_beta,-(self.no_spat//-2)))] 
-            #     strlst += [f"+_{2*i+self.no_spat+1}" for i in range(min(self.no_beta+(self.no_spat//-2),self.no_spat//2))]
-                # print(strlst)
-            # else:
-            # strlst = [f"{i}^" for i in range(self.n_elec)]
-            # hf_op = openfermion.FermionOperator(" ".join(strlst), 1.0)
-            # hf_mat = openfermion.linalg.get_sparse_operator(hf_op, n_qubits=self.n_orbs)
-            # hf_state = hf_mat @ sv_vac
-            # print(np.nonzero(self.hf_state))
-            # print(np.nonzero(sv_vac))
-
             self._basis_states = np.arange(2**self.n_orbs)
             self.fast_rotations = self._get_fast_rotations()
             energy_fn = self._get_fast_energy
@@ -411,34 +400,4 @@ class Ansatz_kUpCCGSDSinglet(UCCAnsatz):
                 param_excitations[f"{key}_k{iteration}"] = value
             for key, value in doubles_excitations.items():
                 param_excitations[f"{key}_k{iteration}"] = value
-        return param_excitations
-
-class Ansatz_tUPS(UCCAnsatz):
-    def __init__(self, mol, L=1, **kwargs):
-        self.layers = L
-        # self.singles_inc = singles_inc
-        super().__init__(mol, **kwargs)
-
-    def excitations(self):
-        param_excitations = {}
-        for l in range(self.layers):
-            # defining k_10, k_32, k_54, ... k_pq. where q is even 
-            for p in range(2, self.n_orbs, 4):
-                q = p-2
-                # spin adapted singles set 1
-                param_excitations[f'{l+1}s{p//2}{q//2}-1'] = [(1.0,((q,),(p,))),(1.0,((q+1,),(p+1,)))]
-                # paired doubles
-                param_excitations[f'{l+1}d{p//2}{q//2}-2'] = [(1.0,((q,q+1),(p,p+1)))] # -1?
-                # spin adapted singles set 2
-                param_excitations[f'{l+1}s{p//2}{q//2}-3'] = [(1.0,((q,),(p,))),(1.0,((q+1,),(p+1,)))]
-            # defining k_21, k_43, k_65, ... k_pq. where q is odd 
-            # 2nd half layer of tups
-            for q in range(2, self.n_orbs-2, 4):
-                p = q+2
-                # spin adapted singles set 1
-                param_excitations[f'{l+1}s{p//2}{q//2}-1'] = [(1.0,((q,),(p,))),(1.0,((q+1,),(p+1,)))]
-                # paired doubles
-                param_excitations[f'{l+1}d{p//2}{q//2}-2'] = [(1.0,((q,q+1),(p,p+1)))] # -1?
-                # spin adapted singles set 2
-                param_excitations[f'{l+1}s{p//2}{q//2}-3'] = [(1.0,((q,),(p,))),(1.0,((q+1,),(p+1,)))]
         return param_excitations

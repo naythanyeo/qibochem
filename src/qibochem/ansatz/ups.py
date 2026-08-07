@@ -20,27 +20,32 @@ class UPSAnsatz(UCCAnsatz):
     spin_preserving: bool = False # if S_z is preserved using spin adapted or paired operators
 
     def __post_init__(self):
-        self.layers=2
         super().__post_init__()
         self.n_spat = self.mol.norb
         self.n_spin = self.mol.nso
         self.n_elec = self.mol.nelec
+        self.n_active_elec = self.mol.n_active_e
+        self.n_active_spat = self.mol.n_active_orbs
+        self.n_active_spin = self.mol.n_active_orbs
         self.n_alpha = self.mol.nalpha
         self.n_beta = self.mol.nbeta
-        self.N = 2 ** self.n_spin # size of Fock space
-        if self.use_projection:
-            self._initialise_projection_mat()
+        self.N = 2 ** self.n_active_spin # size of Fock space
 
-        self.hf_ref = self._initialise_reference()
-        self._generate_operator_matrix()
+        if self.use_mat_mul:
+            if self.use_projection:
+                self._initialise_projection_mat()
 
-        self._initialise_hamiltonian()
+            self.hf_ref = self._initialise_reference()
+
+            self._generate_operator_matrix()
+
+            self._initialise_hamiltonian()
 
 
-        # self.theta_vector = np.array([self.initial_params[name] for name in self.param_names])
-        self.theta_vector = np.zeros(len(self.param_names))
+            self.theta_vector = np.array([self.initial_params[name] for name in self.param_names])
+            # self.theta_vector = np.zeros(len(self.param_names))
 
-        self.wfn = self._get_wfn(self.theta_vector)
+            self.wfn = self._get_wfn(self.theta_vector)
 
 
     def _initialise_reference(self):
@@ -48,7 +53,7 @@ class UPSAnsatz(UCCAnsatz):
         if self.ref_bitstring is not None:
             sv_idx = int(self.ref_bitstring,2)
         else:
-            bitstring = '1' * self.n_elec + '0' * (self.n_spin - self.n_elec)
+            bitstring = '1' * self.n_active_elec + '0' * (self.n_active_spin - self.n_active_elec)
             sv_idx = int(bitstring,2)
         
         sv[sv_idx] = 1.0
@@ -57,7 +62,6 @@ class UPSAnsatz(UCCAnsatz):
             sv = self.proj_mat.T @ sv
 
         return sv
-
 
     def _initialise_hamiltonian(self):
         self.h_mat = get_sparse_operator(self.mol.hamiltonian('qubit', ferm_qubit_map=self.ferm_qubit_map))
@@ -73,14 +77,14 @@ class UPSAnsatz(UCCAnsatz):
                 qubit_op += excitation2qubit_observable(weighted_excitation,
                                                         ferm_qubit_map=self.ferm_qubit_map)
             if self.use_projection:
-                self.operator_mat_dict[name[:4]] = self.proj_mat.T @ get_sparse_operator(qubit_op, n_qubits=self.n_spin) @ self.proj_mat
+                self.operator_mat_dict[name[1:4]] = self.proj_mat.T @ get_sparse_operator(qubit_op, n_qubits=self.n_active_spin) @ self.proj_mat
             else:
-                self.operator_mat_dict[name[:4]] = get_sparse_operator(qubit_op, n_qubits=self.n_spin)
+                self.operator_mat_dict[name[1:4]] = get_sparse_operator(qubit_op, n_qubits=self.n_active_spin)
 
     def _get_wfn(self, theta_vector):
         wfn = self.hf_ref.copy()
         for idx, name in enumerate(self.param_names):
-            wfn = expm_multiply(self.operator_mat_dict[name[:4]] * theta_vector[idx], wfn)
+            wfn = expm_multiply(self.operator_mat_dict[name[1:4]] * theta_vector[idx], wfn)
         return wfn
 
     @property
@@ -92,19 +96,22 @@ class UPSAnsatz(UCCAnsatz):
     def dim(self):
         return len(self.theta_vector)
 
-    def _get_fast_energy(self, x):
+    def _get_fast_mat_mul_energy(self, x):
         self.wfn = self._get_wfn(x)
-        return self.energy
+        energy = self.energy
+        # print(energy)
+        return energy
 
     def _initialise_projection_mat(self):
         bitstrings = []
 
-        alpha_positions = [0, 2, 4, 6, 8, 10]      # 0-based indices
-        beta_positions = [1, 3, 5, 7, 9, 11]
+        # get combinations of allowed bitstrings
+        alpha_positions = [i for i in range(0,self.n_active_spat,2)]
+        beta_positions = [i for i in range(1,self.n_active_spat,2)]
 
         for odd_choice in itertools.combinations(alpha_positions, 3):
             for even_choice in itertools.combinations(beta_positions, 3):
-                s = ['0'] * self.n_spin
+                s = ['0'] * self.n_active_spin
 
                 for i in odd_choice:
                     s[i] = '1'
@@ -121,10 +128,17 @@ class UPSAnsatz(UCCAnsatz):
         self.proj_mat = self.proj_mat.tocsc()
         self.proj_N = len(bitstrings)
 
+
+class Ansatz_tUPS(UPSAnsatz):
+    def __init__(self, mol, layers=1, use_first_singles=True,**kwargs):
+        self.layers = layers
+        self.use_first_singles = use_first_singles
+        super().__init__(mol, **kwargs)
     def excitations(self):
         param_excitations = {}
         for l in range(self.layers):
             # defining k_10, k_32, k_54, ... k_pq. where q is even 
+            # 1st half layer of tup
             for p in range(2, self.n_orbs, 4):
                 q = p-2
                 # spin adapted singles set 1

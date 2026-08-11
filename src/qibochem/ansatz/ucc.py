@@ -108,7 +108,7 @@ class UCCAnsatz:
                 )
                 self.initial_params = self._amplitudes2params()
             elif self.use_random_angles:
-                self.initial_params = {name: rng.random()*np.pi*2 for name in self.param_names}
+                self.initial_params = {name: (rng.random()-0.5)*np.pi*2 for name in self.param_names}
             elif self.initial_angles is not None:
                 self.initial_params = {name: self.initial_angles[idx] for idx, name in enumerate(self.param_names)}
             else:
@@ -321,6 +321,7 @@ class UCCAnsatz:
         self.protocol = protocol # Set self attribute protocol for get_energy to run
 
         if self.use_mat_mul and fast_mat_mul:
+            optimizer_kwargs['jac'] = True
             energy_fn = self._get_fast_mat_mul_energy
         elif fast:
             self.hf_state = get_hf_bit_state(self.n_orbs, self.n_elec)

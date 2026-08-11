@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 import openfermion
 import pyscf
+from pyscf import lo
 from qibo.hamiltonians import SymbolicHamiltonian
 
 from qibochem.driver.hamiltonian import (
@@ -166,6 +167,7 @@ class Molecule:
         spin = self.multiplicity - 1  # PySCF spin is 2S
         pyscf_mol = pyscf.gto.M(charge=self.charge, spin=spin, atom=geom_string, basis=self.basis, symmetry="C1")
         pyscf_mol.verbose = 0
+        self.mol = pyscf_mol # save for localisation methods
 
         pyscf_job = pyscf.scf.RHF(pyscf_mol)
         pyscf_job.max_cycle = max_scf_cycles
@@ -321,7 +323,7 @@ class Molecule:
                 _frozen = frozen
         return _active, _frozen
 
-    def hf_embedding(self, active=None, frozen=None):
+    def hf_embedding(self, active=None, frozen=None, orbitals='canonical'):
         """
         Turns on HF embedding for a given active/frozen space, and fills in the class attributes: ``inactive_energy``
         , ``embed_oei``, and ``embed_tei``.
@@ -342,6 +344,14 @@ class Molecule:
         self.active = _active
         self.frozen = _frozen
 
+        # Update other class attributes
+        self.n_active_orbs = 2 * len(self.active)
+        self.n_active_e = self.nelec - 2 * len(self.frozen)
+
+        if orbitals != 'canonical':
+            self.localisation(orbitals)
+
+        
         # Build the inactive Fock matrix first
         inactive_fock = self._inactive_fock_matrix(self.frozen)
 
@@ -355,9 +365,6 @@ class Molecule:
         self.embed_oei = inactive_fock[np.ix_(self.active, self.active)]
         self.embed_tei = self.tei[np.ix_(self.active, self.active, self.active, self.active)]
 
-        # Update other class attributes
-        self.n_active_orbs = 2 * len(self.active)
-        self.n_active_e = self.nelec - 2 * len(self.frozen)
 
     @staticmethod
     def _filter_array(array, threshold):
@@ -492,3 +499,20 @@ class Molecule:
         """Returns the total Spin Fermionic Operators"""
         n_spatial = self.n_active_orbs // 2 if self.n_active_orbs is not None else self.norb
         return s2_operator(n_spatial)
+
+    def localisation(self, method):
+        C_mo = np.copy(self.ca)
+        active_occ = [i for i in self.active[:self.n_active_e//2]]
+        active_vir = [i for i in self.active[self.n_active_e//2:]]
+        C_active_occ = C_mo[:,active_occ]
+        C_active_vir = C_mo[:,active_vir]
+        if method == 'boys':
+            C_active_occ_lo = lo.Boys(self.mol, C_active_occ).kernel()
+            C_active_vir_lo = lo.Boys(self.mol, C_active_vir).kernel()
+        elif method == 'pm':
+            C_active_occ_lo = lo.PM(self.mol, C_active_occ).kernel()
+            C_active_vir_lo = lo.PM(self.mol, C_active_vir).kernel()
+        # print(C_active_lo)
+        C_mo[:,:self.n_active_e//2] = C_active_occ_lo
+        C_mo[:,self.n_active_e//2:] = C_active_vir_lo
+        self.ca = C_mo

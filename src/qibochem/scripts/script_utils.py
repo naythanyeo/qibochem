@@ -46,7 +46,7 @@ def parse_active_space(active_space):
     return int(match.group(1)), int(match.group(2))
 
 
-def load_molecule(xyz_path, num_active_e, num_active_o, log=None, **metadata):
+def load_molecule(xyz_path, num_active_e, num_active_o, log=None, orbitals='canonical', **metadata):
     start = time.perf_counter()
     mol = Molecule(xyz_file=str(xyz_path), basis="sto-3g")
     mol.run_pyscf()
@@ -54,7 +54,7 @@ def load_molecule(xyz_path, num_active_e, num_active_o, log=None, **metadata):
     active_mo_start = mol.nelec // 2 - num_active_e // 2
     active_mos = list(range(active_mo_start, active_mo_start + num_active_o))
     frozen_mos = [mo for mo in range(mol.nelec // 2) if mo not in active_mos]
-    mol.hf_embedding(active=active_mos, frozen=frozen_mos)
+    mol.hf_embedding(active=active_mos, frozen=frozen_mos, orbitals=orbitals)
 
     if log is not None:
         log("pyscf_and_embedding", time.perf_counter() - start, **metadata)

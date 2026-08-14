@@ -17,33 +17,34 @@ def callback(param):
     global tups
 
     iteration += 1
-    # print(f"Iteration {iteration}")
-    # print("Parameters:", param)
-    # print("Energy:", tups.energy)
+    print(f"Iteration {iteration}")
+    print("Parameters:", param)
+    print("Energy:", tups.energy)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 sv_protocol = StateVectorProtocol()
 
-num_active_e = 6
-num_active_o = 6
-molecule_name = 'h6'
+num_active_e = 8
+num_active_o = 8
+molecule_name = 'h8'
 n_layers = 1
 input_dir = "./data/"
 mol = load_molecule(
             SCRIPT_DIR / 'data' / '28_mols' / f"{molecule_name}.xyz",
             num_active_e,
             num_active_o,
-            orbitals='iao'
+            orbitals='canonical'
         )
 
-ref_bitstr = '110011001100'
+ref_bitstr = '1100110011000110'
 # perm = [0,4,2,3,1,5]
 perm = [0,5,1,4,2,3]
+perm = None
 # perm = [0,3,1,4,2,5]
 # initial_guess = np.fromstring(array_text, sep=' ')
-for i in range(10):
-    tups = Ansatz_tUPS(mol=mol, layers=1, oo_layers=0, use_random_angles=True, use_mp2_guess=False, 
+for i in range(1):
+    tups = Ansatz_tUPS(mol=mol, layers=1, oo_layers=0, use_random_angles=False, use_mp2_guess=False, 
                     use_projection=True, use_mat_mul=True, perfect_pair=True, ref_bitstring=ref_bitstr, mo_perm=perm
                     )
 

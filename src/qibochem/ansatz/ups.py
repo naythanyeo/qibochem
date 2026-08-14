@@ -37,10 +37,12 @@ class UPSAnsatz(UCCAnsatz):
         super().__post_init__()
 
         if self.use_mat_mul:
+            self.hf_ref = self._initialise_reference()
+
+
             if self.use_projection:
                 self._initialise_projection_mat()
-
-            self.hf_ref = self._initialise_reference()
+                self.hf_ref = self.proj_mat.T @ self.hf_ref
 
             self._generate_operator_matrix()
 
@@ -52,6 +54,9 @@ class UPSAnsatz(UCCAnsatz):
 
 
     def _initialise_reference(self):
+        '''Generate statevector reference from given bitstring or just from the HF reference order.
+        Number of alpha and beta electrons used for generation of the projection matrix later.
+        '''
         sv = np.zeros(self.N, dtype=complex)
         if self.ref_bitstring is not None:
             sv_idx = int(self.ref_bitstring,2)
@@ -59,12 +64,18 @@ class UPSAnsatz(UCCAnsatz):
             self.ref_bitstring = '1' * self.n_active_elec + '0' * (self.n_active_spin - self.n_active_elec)
             sv_idx = int(self.ref_bitstring,2)
         sv[sv_idx] = 1.0
-        if self.use_projection:
-            sv = self.proj_mat.T @ sv
+
+        self.n_active_alpha = sum(1 for idx, bit in enumerate(self.ref_bitstring) if idx % 2 == 0 and bit == '1')
+        self.n_active_beta = sum(1 for idx, bit in enumerate(self.ref_bitstring) if idx % 2 == 1 and bit == '1')
 
         return sv
 
     def _initialise_hamiltonian(self):
+        '''Function to create a the molecular hamiltonian in the form of a sparse matrix.
+        Perfect pairing reorders the molecular coefficient indices as given by mo_perm.
+        Using the projection matrix reduces the dimension of the matrix from the Fock space to the 
+        smaller Hilbert space for faster computation.
+        '''
         if not self.perfect_pair:
             self.h_mat = get_sparse_operator(self.mol.hamiltonian('qubit', ferm_qubit_map=self.ferm_qubit_map))
         else:
@@ -90,6 +101,9 @@ class UPSAnsatz(UCCAnsatz):
             self.h_mat = self.proj_mat.T @ (self.h_mat @ self.proj_mat)
 
     def _generate_operator_matrix(self):
+        '''Function to generate the excitation operator matrices for multiplication later during
+        the update step.
+        Using the projection matrix reduces the dimension of each of the operator matrices for faster calculation.'''
         self.operator_mat_dict = {}
         for name, weighted_excitations in self.param_excitations.items():
             qubit_op = excitation2qubit_observable(weighted_excitations[0],
@@ -103,7 +117,8 @@ class UPSAnsatz(UCCAnsatz):
                 self.operator_mat_dict[name[1:4]] = get_sparse_operator(qubit_op, n_qubits=self.n_active_spin)
 
     def _update_mat_mul(self, theta_vector):
-        '''step to update wave function, energy and gradient'''
+        '''Function to update wave function, energy and gradient during optimisation.
+        Using the analytical gradient speeds up the optimisation as using the numerical gradient is slower.'''
 
         if self.use_projection: # use smaller dimension if projected
             N = self.proj_N
@@ -127,16 +142,18 @@ class UPSAnsatz(UCCAnsatz):
 
     @property
     def dim(self):
+        '''returns number of parameters'''
         return len(self.param_names)
 
     def _get_fast_mat_mul_energy(self, x):
-        '''function called during optimisation'''
+        '''loss function called during optimisation'''
         self._update_mat_mul(x)
         return (self.energy, self.gradient)
 
     def _initialise_projection_mat(self):
         '''initialise projection matrix for reducing dimension from Fock space 
-        to the smaller Hillbert space with constant quantum numbers (particle, spin)'''
+        to the smaller Hillbert space with constant quantum numbers (particle, spin).
+        Speeds up the matrix multiplication step'''
         bitstrings = []
 
         if self.spin_preserving:
@@ -144,8 +161,8 @@ class UPSAnsatz(UCCAnsatz):
             alpha_positions = [i for i in range(0,self.n_active_spin,2)]
             beta_positions = [i for i in range(1,self.n_active_spin,2)]
 
-            for odd_choice in itertools.combinations(alpha_positions, 3):
-                for even_choice in itertools.combinations(beta_positions, 3):
+            for odd_choice in itertools.combinations(alpha_positions, self.n_active_alpha):
+                for even_choice in itertools.combinations(beta_positions, self.n_active_beta):
                     s = ['0'] * self.n_active_spin
 
                     for i in odd_choice:
@@ -153,11 +170,10 @@ class UPSAnsatz(UCCAnsatz):
 
                     for i in even_choice:
                         s[i] = '1'
-
                     bitstrings.append(int("".join(s),2))
         else:
             # get combinations of allowed bitstrings that conserves only particle number
-            perm_str = '1'*self.n_elec + '0'*(self.n_spin-self.n_elec)
+            perm_str = '1'*self.n_active_elec + '0'*(self.n_active_spin-self.n_active_elec)
             perms = tuple(set(itertools.permutations(perm_str)))
             bitstrings = [''.join(x) for x in perms]
         bitstrings.sort()

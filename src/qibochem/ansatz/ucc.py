@@ -29,7 +29,7 @@ Ansatz construction is more easily done here also by defining param_excitations
 import numpy as np
 
 # Instantiate the generator
-rng = np.random.default_rng(seed=100)
+rng = np.random.default_rng(seed=67)
 
 @dataclass
 class UCCAnsatz:

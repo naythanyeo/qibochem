@@ -506,13 +506,41 @@ class Molecule:
         active_vir = [i for i in self.active[self.n_active_e//2:]]
         C_active_occ = C_mo[:,active_occ]
         C_active_vir = C_mo[:,active_vir]
+
         if method == 'boys':
             C_active_occ_lo = lo.Boys(self.mol, C_active_occ).kernel()
             C_active_vir_lo = lo.Boys(self.mol, C_active_vir).kernel()
+            C_mo[:,active_occ] = C_active_occ_lo
+            C_mo[:,active_vir] = C_active_vir_lo
         elif method == 'pm':
             C_active_occ_lo = lo.PM(self.mol, C_active_occ).kernel()
             C_active_vir_lo = lo.PM(self.mol, C_active_vir).kernel()
-        # print(C_active_lo)
-        C_mo[:,:self.n_active_e//2] = C_active_occ_lo
-        C_mo[:,self.n_active_e//2:] = C_active_vir_lo
+            C_mo[:,active_occ] = C_active_occ_lo
+            C_mo[:,active_vir] = C_active_vir_lo
+        # elif method == 'ibo':
+        #     occ_orbs = [i for i in range(self.nelec//2)]
+        #     vir_orbs = [i for i in range(self.nelec//2,self.norb,1)] 
+        #     C_occ = C_mo[:,occ_orbs]
+        #     C_vir = C_mo[:,vir_orbs]
+        #     C_iao = lo.iao.iao(self.mol, C_occ)
+            
+        #     C_iao_sym = lo.vec_lowdin(C_iao, self.overlap)
+        #     C_ibo = lo.ibo.ibo(self.mol, C_occ, iaos=C_iao_sym, s=self.overlap)
+
+        #     C_livvo = lo.vvo.livvo(self.mol, C_occ, C_vir)
+        #     C_mo[:,occ_orbs] = C_ibo
+        #     C_mo[:,vir_orbs] = C_livvo
+        elif method == 'iao':
+            occ_orbs = [i for i in range(self.nelec//2)]
+            vir_orbs = [i for i in range(self.nelec//2,self.norb,1)] 
+            C_occ = C_mo[:,occ_orbs]
+            C_vir = C_mo[:,vir_orbs]
+            C_iao = lo.iao.iao(self.mol, C_occ)
+            
+            C_mo = lo.vec_lowdin(C_iao, self.overlap)
+
+
         self.ca = C_mo
+        
+        
+

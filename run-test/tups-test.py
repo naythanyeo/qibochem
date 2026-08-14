@@ -9,15 +9,17 @@ from qibochem.scripts.script_utils import load_molecule
 SCRIPT_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = SCRIPT_DIR / "data" / "output"
 
+np.set_printoptions(precision=5, suppress=True)
+
 iteration=0
 def callback(param):
     global iteration
     global tups
 
     iteration += 1
-    print(f"Iteration {iteration}")
-    print("Parameters:", param)
-    print("Energy:", tups.energy)
+    # print(f"Iteration {iteration}")
+    # print("Parameters:", param)
+    # print("Energy:", tups.energy)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -32,16 +34,20 @@ mol = load_molecule(
             SCRIPT_DIR / 'data' / '28_mols' / f"{molecule_name}.xyz",
             num_active_e,
             num_active_o,
-            orbitals='pm'
+            orbitals='canonical'
         )
 
 ref_bitstr = '110011001100'
-
+perm = [0,4,2,3,1,5]
+perm = [0,5,1,4,2,3]
+perm = [0,3,1,4,2,5]
 # initial_guess = np.fromstring(array_text, sep=' ')
-tups = Ansatz_tUPS(mol=mol, layers=1, oo_layers=0, use_random_angles=False, use_mp2_guess=False, 
-                   use_projection=True, use_mat_mul=True, perfect_pair=True, ref_bitstring=ref_bitstr
-                   )
+for i in range(10):
+    tups = Ansatz_tUPS(mol=mol, layers=1, oo_layers=0, use_random_angles=True, use_mp2_guess=False, 
+                    use_projection=True, use_mat_mul=True, perfect_pair=True, ref_bitstring=ref_bitstr, mo_perm=perm
+                    )
 
-tups.run_vqe(protocol=sv_protocol, fast=True, callback=callback, method='L-BFGS-B', fast_mat_mul=True,)
-print(tups.param_names)
-print(tups.energy)
+    tups.run_vqe(protocol=sv_protocol, fast=True, callback=callback, method='L-BFGS-B', fast_mat_mul=True,)
+    print(tups.param_names)
+    print(tups.energy)
+# print(tups.final_circuit)

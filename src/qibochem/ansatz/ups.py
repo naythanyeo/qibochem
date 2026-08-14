@@ -20,6 +20,7 @@ class UPSAnsatz(UCCAnsatz):
     spin_preserving: bool = False # if S_z is preserved using spin adapted or paired operators
     perfect_pair: bool = False
     oo_layers: str | int = 0
+    mo_perm: list | None = None
 
     def __post_init__(self):
         self.n_spat = self.mol.norb
@@ -55,10 +56,9 @@ class UPSAnsatz(UCCAnsatz):
         if self.ref_bitstring is not None:
             sv_idx = int(self.ref_bitstring,2)
         else:
-            bitstring = '1' * self.n_active_elec + '0' * (self.n_active_spin - self.n_active_elec)
-            sv_idx = int(bitstring,2)
+            self.ref_bitstring = '1' * self.n_active_elec + '0' * (self.n_active_spin - self.n_active_elec)
+            sv_idx = int(self.ref_bitstring,2)
         sv[sv_idx] = 1.0
-
         if self.use_projection:
             sv = self.proj_mat.T @ sv
 
@@ -68,11 +68,23 @@ class UPSAnsatz(UCCAnsatz):
         if not self.perfect_pair:
             self.h_mat = get_sparse_operator(self.mol.hamiltonian('qubit', ferm_qubit_map=self.ferm_qubit_map))
         else:
-            perm = [0,3,1,4,2,5]
+            if self.mo_perm is None:
+                self.mo_perm = [0 for _ in range(self.n_active_spat)]
+                i = 0
+                for _ in range(0,self.n_active_spat,2):
+                    self.mo_perm[_] = i
+                    i += 1
+
+                for _ in range(self.n_active_spat-1-self.n_active_spat % 2, 0, -2):
+                    self.mo_perm[_] = i
+                    i += 1
+            if len(self.mo_perm) != self.n_active_spat:
+                raise ValueError("Length of permutation list does not equal the number of spatial orbitals!")
+
             oei = self.mol.oei
             tei = self.mol.tei
-            oei_pp = oei[np.ix_(perm, perm)]
-            tei_pp = tei[np.ix_(perm, perm, perm, perm)]
+            oei_pp = oei[np.ix_(self.mo_perm, self.mo_perm)]
+            tei_pp = tei[np.ix_(self.mo_perm, self.mo_perm, self.mo_perm, self.mo_perm)]
             self.h_mat = get_sparse_operator(self.mol.hamiltonian('qubit', ferm_qubit_map=self.ferm_qubit_map, oei=oei_pp, tei=tei_pp))
         if self.use_projection:
             self.h_mat = self.proj_mat.T @ (self.h_mat @ self.proj_mat)
@@ -91,7 +103,9 @@ class UPSAnsatz(UCCAnsatz):
                 self.operator_mat_dict[name[1:4]] = get_sparse_operator(qubit_op, n_qubits=self.n_active_spin)
 
     def _update_mat_mul(self, theta_vector):
-        if self.use_projection:
+        '''step to update wave function, energy and gradient'''
+
+        if self.use_projection: # use smaller dimension if projected
             N = self.proj_N
         else:
             N = self.N
@@ -111,37 +125,41 @@ class UPSAnsatz(UCCAnsatz):
         self.energy = np.conj(self.wfn).T @ (self.h_mat @ self.wfn)
 
 
-    # @property
-    # def energy(self):
-    #     E = np.conj(self.wfn) @ (self.h_mat @ self.wfn)
-    #     return E
-
     @property
     def dim(self):
         return len(self.param_names)
 
     def _get_fast_mat_mul_energy(self, x):
+        '''function called during optimisation'''
         self._update_mat_mul(x)
         return (self.energy, self.gradient)
 
     def _initialise_projection_mat(self):
+        '''initialise projection matrix for reducing dimension from Fock space 
+        to the smaller Hillbert space with constant quantum numbers (particle, spin)'''
         bitstrings = []
 
-        # get combinations of allowed bitstrings
-        alpha_positions = [i for i in range(0,self.n_active_spin,2)]
-        beta_positions = [i for i in range(1,self.n_active_spin,2)]
+        if self.spin_preserving:
+            # get combinations of allowed bitstrings that conserves spin and particle number
+            alpha_positions = [i for i in range(0,self.n_active_spin,2)]
+            beta_positions = [i for i in range(1,self.n_active_spin,2)]
 
-        for odd_choice in itertools.combinations(alpha_positions, 3):
-            for even_choice in itertools.combinations(beta_positions, 3):
-                s = ['0'] * self.n_active_spin
+            for odd_choice in itertools.combinations(alpha_positions, 3):
+                for even_choice in itertools.combinations(beta_positions, 3):
+                    s = ['0'] * self.n_active_spin
 
-                for i in odd_choice:
-                    s[i] = '1'
+                    for i in odd_choice:
+                        s[i] = '1'
 
-                for i in even_choice:
-                    s[i] = '1'
+                    for i in even_choice:
+                        s[i] = '1'
 
-                bitstrings.append(int("".join(s),2))
+                    bitstrings.append(int("".join(s),2))
+        else:
+            # get combinations of allowed bitstrings that conserves only particle number
+            perm_str = '1'*self.n_elec + '0'*(self.n_spin-self.n_elec)
+            perms = tuple(set(itertools.permutations(perm_str)))
+            bitstrings = [''.join(x) for x in perms]
         bitstrings.sort()
         # construct projector matrix and dimension of reduced space
         self.proj_mat = lil_matrix((self.N, len(bitstrings)))
@@ -155,9 +173,9 @@ class Ansatz_tUPS(UPSAnsatz):
     def __init__(self, mol, layers=1, use_first_singles=True,**kwargs):
         self.layers = layers
         self.use_first_singles = use_first_singles
-        super().__init__(mol, **kwargs)
+        super().__init__(mol, spin_preserving=True, **kwargs)
 
-        
+
     def excitations(self):
         param_excitations = {}
         for l in range(self.layers):

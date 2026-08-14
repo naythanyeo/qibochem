@@ -34,13 +34,13 @@ mol = load_molecule(
             SCRIPT_DIR / 'data' / '28_mols' / f"{molecule_name}.xyz",
             num_active_e,
             num_active_o,
-            orbitals='canonical'
+            orbitals='iao'
         )
 
 ref_bitstr = '110011001100'
-perm = [0,4,2,3,1,5]
+# perm = [0,4,2,3,1,5]
 perm = [0,5,1,4,2,3]
-perm = [0,3,1,4,2,5]
+# perm = [0,3,1,4,2,5]
 # initial_guess = np.fromstring(array_text, sep=' ')
 for i in range(10):
     tups = Ansatz_tUPS(mol=mol, layers=1, oo_layers=0, use_random_angles=True, use_mp2_guess=False, 

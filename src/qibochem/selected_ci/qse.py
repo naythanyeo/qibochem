@@ -21,6 +21,7 @@ from qibochem.driver.observables import (
     multiply_bitmask_observables,
     qubit_operator2observable,
 )
+from qibochem.measurement.protocol import StateVectorProtocol
 from qibochem.selected_ci.utils import assemble_matrix_outputs, pickle2dict, dict2pickle
 
 """
@@ -129,6 +130,12 @@ class QSE_Computable:
             "n_orbs": n_orbs,
             "spin_projection": self.spin_projection,
         }
+        # First define the excitation operators.
+        self.operators = self.excitation_generator(self.excitation_params)
+        
+        # If no observable is specified, default to hamiltonian
+        if self.observable is None:
+            self.observable = self.molecule.hamiltonian("f")
     
 
 
@@ -167,9 +174,9 @@ class QSE_Computable:
                                                    threshold=self.map_threshold)
         return projected_S
 
-    def _get_H_ij_direct(self, i, j, ferm_hamiltonian):
+    def _get_H_ij(self, i, j, ferm_hamiltonian):
         """
-        Get a term of Hij directly from the hamilltonian
+        Get a term of Hij directly from the observable
         """
         bitmask_Ei, bitmask_Ej = self._get_Ei_Ej(i, j)
         bitmask_ham = self._map_ferm2bitmask(ferm_hamiltonian)
@@ -221,7 +228,7 @@ class QSE_Computable:
         for i, j in product(range(dim), repeat=2):
             if i > j:
                 continue # Only build upper triangular
-            H_ij = self._get_H_ij_direct(i, j, ferm_observable)
+            H_ij = self._get_H_ij(i, j, ferm_observable)
             self.h_data[(i, j)] = H_ij
 
         # Optional caching if the cache path is provided
@@ -241,13 +248,6 @@ class QSE_Computable:
         Returns:
             H and S matrices as arrays, or dictionaries of sampled matrices.
         """
-        # First define the excitation operators.
-        self.operators = self.excitation_generator(self.excitation_params)
-
-        # If no observable is specified, default to hamiltonian
-        if self.observable is None:
-            self.observable = self.molecule.hamiltonian("f")
-
         # Update the H and S observables if they were not done before
         if self.h_data is None:
             self.h_data = defaultdict()
@@ -270,3 +270,45 @@ class QSE_Computable:
         H, S = assemble_matrix_outputs(protocol.evaluate(circuit, qse_observables))
 
         return H, S
+
+    def run_qse_light(self, circuit, protocol) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Lightweight run_qse function that only supports statevector
+        Each Hij an Sij term is evaluated individually first
+        Reduces RAM significantly, but cannot build global commuting terms
+        """
+        # Prevent usage with non statevector calculations 
+        if not isinstance(protocol, StateVectorProtocol):
+            raise TypeError(
+                "run_qse_light is only supported for Statevector calculations"
+                "use run_qse to run shots calculations"
+            )
+
+        dim = len(self.operators)
+        H_matrix = np.zeros((dim, dim), dtype=complex)
+        S_matrix = np.zeros((dim, dim), dtype=complex)
+
+        # Outputs 
+        for i, j in product(range(dim), repeat=2):
+            if i > j:
+                continue # Only build upper triangular first
+
+            # Get S_ij
+            S_ij_observables = self._get_S_ij(i, j)
+            S_ij_exp = protocol.evaluate(circuit, S_ij_observables)
+            S_matrix[i, j] = S_ij_exp
+            del S_ij_observables
+
+            # Get H_ij
+            H_ij_observables = self._get_H_ij(i, j, self.observable)
+            H_ij_exp = protocol.evaluate(circuit, H_ij_observables)
+            H_matrix[i, j] = H_ij_exp
+            del H_ij_observables
+
+            # Save the adjoint terms
+            if i != j:
+                S_matrix[j, i] = np.conj(S_ij_exp)
+                H_matrix[j, i] = np.conj(H_ij_exp)
+            del S_ij_exp, H_ij_exp
+
+        return H_matrix, S_matrix

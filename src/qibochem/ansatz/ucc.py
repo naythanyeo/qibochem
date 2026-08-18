@@ -108,7 +108,7 @@ class UCCAnsatz:
                 )
                 self.initial_params = self._amplitudes2params()
             elif self.use_random_angles:
-                self.initial_params = {name: (rng.random()-0.5)*np.pi*2 for name in self.param_names}
+                self.initial_params = {name: (rng.random()-0.5)*np.pi*1e-3 for name in self.param_names}
             elif self.initial_angles is not None:
                 self.initial_params = {name: self.initial_angles[idx] for idx, name in enumerate(self.param_names)}
             else:

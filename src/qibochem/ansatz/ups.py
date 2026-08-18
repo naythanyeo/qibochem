@@ -7,6 +7,8 @@ from qibochem.driver.hamiltonian import _qubit_hamiltonian
 from scipy.sparse.linalg import expm_multiply
 from scipy.sparse import csc_matrix, lil_matrix
 import itertools
+from qibo.optimizers import optimize
+
 
 '''
 New class for general UPS and tUPS. 
@@ -131,7 +133,7 @@ class UPSAnsatz(UCCAnsatz):
         for j in range(grad_wfn.shape[1]):
             grad_wfn[:,j] = self.hf_ref.copy()
 
-        for idx, name in enumerate(self.param_names):
+        for idx, name in enumerate(self.param_names[:len(theta_vector)]):
             grad_wfn = expm_multiply(self.operator_mat_dict[name[1:4]] * theta_vector[idx], grad_wfn)
             grad_wfn[:,idx] = self.operator_mat_dict[name[1:4]] @ grad_wfn[:,idx]
             self.wfn = expm_multiply(self.operator_mat_dict[name[1:4]] * theta_vector[idx], self.wfn)
@@ -192,11 +194,95 @@ class Ansatz_tUPS(UPSAnsatz):
         super().__init__(mol, spin_preserving=True, **kwargs)
 
 
+    def _update_mat_mul_layered(self, opt_vector):
+        '''Function to update wave function, energy and gradient during optimisation.
+        Using the analytical gradient speeds up the optimisation as using the numerical gradient is slower.
+        TEST FUNCTION FOR LAYERED CONVERGENCE.
+        '''
+
+        if self.use_projection: # use smaller dimension if projected
+            N = self.proj_N
+        else:
+            N = self.N
+
+        self.wfn = self.hf_ref.copy()
+        grad_wfn = np.zeros((N, self.dim))
+        for j in range(grad_wfn.shape[1]):
+            grad_wfn[:,j] = self.hf_ref.copy()
+
+        window_idx = self.layer_structure[self.window[0]]
+        self.theta_vector[window_idx:window_idx+self.window[1]] = opt_vector.copy()
+        # print(opt_vector)
+        # print(self.theta_vector)
+        for idx, name in enumerate(self.param_names):
+            grad_wfn = expm_multiply(self.operator_mat_dict[name[1:4]] * self.theta_vector[idx], grad_wfn)
+            grad_wfn[:,idx] = self.operator_mat_dict[name[1:4]] @ grad_wfn[:,idx]
+            self.wfn = expm_multiply(self.operator_mat_dict[name[1:4]] * self.theta_vector[idx], self.wfn)
+        
+        self.gradient = 2 * np.conj(grad_wfn).T @ self.h_mat @ self.wfn 
+        # print(self.gradient)
+        self.energy = np.conj(self.wfn).T @ (self.h_mat @ self.wfn)
+        return (self.energy, self.gradient)
+
+    def run_extend_vqe(self, method="BFGS", **optimizer_kwargs):
+        # Run_vqe will fail if final parameters are set because initial paramters is not defined
+        if self.final_params is not None:
+            raise RuntimeError("VQE cannot be run after final parameters are set." \
+                               "Input Guess_amplitdues to input initial guess")
+
+
+        optimizer_kwargs['jac'] = True
+        energy_fn = self._get_fast_mat_mul_energy
+
+        theta_vector = np.array([self.initial_params[name] for name in self.param_names if int(name[0])==1 and name[-1] != 'o'])
+        layer_dim = len(theta_vector)
+        for l in range(self.layers):
+            vqe_energy, theta_vector, extra = optimize(energy_fn, theta_vector, 
+                                                       method=method, **optimizer_kwargs)
+            new_params = 1e-3 * np.random.randn(layer_dim)
+            theta_vector = np.concatenate([theta_vector,new_params])
+            print(f'layer: {l+1}')
+
+
+    def run_layered_vqe(self, method="BFGS", **optimizer_kwargs):
+        # Run_vqe will fail if final parameters are set because initial paramters is not defined
+        if self.final_params is not None:
+            raise RuntimeError("VQE cannot be run after final parameters are set." \
+                               "Input Guess_amplitdues to input initial guess")
+
+        optimizer_kwargs['jac'] = True
+
+        energy_fn = self._update_mat_mul_layered
+
+        layer_dim = len([name for name in self.param_names if int(name[0])==1])
+        self.theta_vector = np.array([self.initial_params[name] for name in self.param_names])
+
+        for half_layer in range(self.layers*2 - 1):
+            self.window = (half_layer,layer_dim) # (index of first param in window, width of window)
+            window_idx = self.layer_structure[self.window[0]]
+            opt_vector = self.theta_vector[window_idx:window_idx+self.window[1]]
+            vqe_energy, theta_vector, extra = optimize(energy_fn, opt_vector, 
+                                                       method=method, **optimizer_kwargs)
+                                                       
+            print(f'half layer: {half_layer+1}')
+
+
+        # self._set_params(self.final_params)
+        self.final_circuit = self.circuit.copy()
+        self.vqe_energy = vqe_energy
+        self.vqe_result = extra
+
+        return vqe_energy, self.final_params, self.final_circuit
+
+
     def excitations(self):
         param_excitations = {}
+        self.layer_structure = [] # each element defines index of the first param in one half layer
+        param_count = 0
         for l in range(self.layers):
             # defining k_10, k_32, k_54, ... k_pq. where q is even 
             # 1st half layer of a tups layer
+            self.layer_structure.append(param_count)
             for p in range(2, self.n_orbs, 4):
                 q = p-2
                 # spin adapted singles set 1
@@ -205,8 +291,11 @@ class Ansatz_tUPS(UPSAnsatz):
                 param_excitations[f'{l+1}d{p//2}{q//2}-2'] = [(1.0,((q,q+1),(p,p+1)))] # -1?
                 # spin adapted singles set 2
                 param_excitations[f'{l+1}s{p//2}{q//2}-3'] = [(1.0,((q,),(p,))),(1.0,((q+1,),(p+1,)))]
+                param_count +=3
+            self.layer_structure.append(param_count)
             # defining k_21, k_43, k_65, ... k_pq. where q is odd 
             # 2nd half layer of a tups layer
+
             for q in range(2, self.n_orbs-2, 4):
                 p = q+2
                 # spin adapted singles set 1
@@ -215,6 +304,8 @@ class Ansatz_tUPS(UPSAnsatz):
                 param_excitations[f'{l+1}d{p//2}{q//2}-2'] = [(1.0,((q,q+1),(p,p+1)))] # -1?
                 # spin adapted singles set 2
                 param_excitations[f'{l+1}s{p//2}{q//2}-3'] = [(1.0,((q,),(p,))),(1.0,((q+1,),(p+1,)))]
+                param_count +=3
+        print(self.layer_structure)
 
         # orbital optimisation layers
         for x in range(self.oo_layers):
@@ -231,3 +322,55 @@ class Ansatz_tUPS(UPSAnsatz):
                 param_excitations[f'{x+1}s{p//2}{q//2}-1oo'] = [(1.0,((q,),(p,))),(1.0,((q+1,),(p+1,)))]
         return param_excitations
 
+class Ansatz_r_tUPS(UPSAnsatz):
+    def __init__(self, mol, layers=1, use_first_singles=True,**kwargs):
+        self.layers = layers
+        self.use_first_singles = use_first_singles
+        super().__init__(mol, spin_preserving=True, **kwargs)
+
+    def excitations(self):
+        param_excitations = {}
+        self.layer_structure = [] # each element defines index of the first param in one half layer
+        param_count = 0
+        for l in range(self.layers):
+            # defining k_10, k_32, k_54, ... k_pq. where q is even 
+            # 1st half layer of a tups layer
+            self.layer_structure.append(param_count)
+            for p in range(2, self.n_orbs, 4):
+                q = p-2
+                # spin adapted singles set 1
+                param_excitations[f'{l+1}s{p//2}{q//2}-1'] = [(1.0,((q,),(p,))),(1.0,((q+1,),(p+1,)))]
+                # paired doubles
+                param_excitations[f'{l+1}d{p//2}{q//2}-2'] = [(1.0,((q,q+1),(p,p+1)))] # -1?
+                # spin adapted singles set 2
+                param_excitations[f'{l+1}s{p//2}{q//2}-3'] = [(1.0,((q,),(p,))),(1.0,((q+1,),(p+1,)))]
+                param_count +=3
+            self.layer_structure.append(param_count)
+            # defining k_21, k_43, k_65, ... k_pq. where q is odd 
+            # 2nd half layer of a tups layer
+
+            for q in range(2, self.n_orbs-2, 4):
+                p = q+2
+                # spin adapted singles set 1
+                param_excitations[f'{l+1}s{p//2}{q//2}-1'] = [(1.0,((q,),(p,))),(1.0,((q+1,),(p+1,)))]
+                # paired doubles
+                param_excitations[f'{l+1}d{p//2}{q//2}-2'] = [(1.0,((q,q+1),(p,p+1)))] # -1?
+                # spin adapted singles set 2
+                param_excitations[f'{l+1}s{p//2}{q//2}-3'] = [(1.0,((q,),(p,))),(1.0,((q+1,),(p+1,)))]
+                param_count +=3
+        # print(self.layer_structure)
+
+            # orbital optimisation layers
+            for x in range(self.oo_layers):
+                # 1st half layer of oo layer
+                for p in range(2, self.n_orbs, 4):
+                    q = p-2
+                    # spin adapted singles
+                    param_excitations[f'{l+1}s{p//2}{q//2}-{x+1}oo'] = [(1.0,((q,),(p,))),(1.0,((q+1,),(p+1,)))]
+
+                # 2nd half layer of oo layer
+                for q in range(2, self.n_orbs-2, 4):
+                    p = q+2
+                    # spin adapted singles
+                    param_excitations[f'{l+1}s{p//2}{q//2}-{x+1}oo'] = [(1.0,((q,),(p,))),(1.0,((q+1,),(p+1,)))]
+        return param_excitations

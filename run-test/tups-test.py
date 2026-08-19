@@ -25,9 +25,9 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 
 sv_protocol = StateVectorProtocol()
 
-num_active_e = 8
-num_active_o = 8
-molecule_name = 'h8'
+num_active_e = 6
+num_active_o = 6
+molecule_name = 'h6'
 n_layers = 1
 input_dir = "./data/"
 mol = load_molecule(
@@ -37,7 +37,7 @@ mol = load_molecule(
             orbitals='canonical'
         )
 
-ref_bitstr = '1100110011000110'
+ref_bitstr = '110011001100'
 # perm = [0,4,2,3,1,5]
 perm = [0,5,1,4,2,3]
 perm = None
@@ -49,6 +49,9 @@ for i in range(1):
                     )
 
     tups.run_vqe(protocol=sv_protocol, fast=True, callback=callback, method='L-BFGS-B', fast_mat_mul=True,)
+    # tups.get_spat_1rdm()
+    # tups.get_spat_2rdm()
+    # print(tups.t_rdm)
     print(tups.param_names)
     print(tups.energy)
 # print(tups.final_circuit)

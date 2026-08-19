@@ -3,6 +3,7 @@ import numpy as np
 from dataclasses import dataclass, field
 from qibochem.ansatz.ucc_util import excitation2qubit_observable
 from openfermion.linalg import get_sparse_operator
+from openfermion import FermionOperator, jordan_wigner
 from qibochem.driver.hamiltonian import _qubit_hamiltonian
 from scipy.sparse.linalg import expm_multiply
 from scipy.sparse import csc_matrix, lil_matrix
@@ -183,6 +184,42 @@ class UPSAnsatz(UCCAnsatz):
             self.proj_mat[idx,j] = 1
         self.proj_mat = self.proj_mat.tocsc()
         self.proj_N = len(bitstrings)
+
+    def get_spat_1rdm(self):
+        self.o_rdm = np.zeros([self.n_active_spat,self.n_active_spat])
+        for p in range(self.n_active_spat):
+            for q in range(self.n_active_spat):
+                ferm_op = FermionOperator(f"{p*2}^ {q*2}") + FermionOperator(f"{p*2+1}^ {q*2+1}")
+                qubit_op = jordan_wigner(ferm_op)
+                op_mat = get_sparse_operator(qubit_op, n_qubits=self.n_active_spin)
+                if self.use_projection:
+                    op_mat = self.proj_mat.T @ op_mat @ self.proj_mat
+                self.o_rdm[p][q] = np.conj(self.wfn).T @ op_mat @ self.wfn 
+
+    def get_spat_2rdm(self):
+        self.t_rdm = np.zeros([self.n_active_spat,self.n_active_spat,self.n_active_spat,self.n_active_spat])
+        chi = np.zeros([self.n_active_spat,self.n_active_spat,2,2,self.N],dtype=complex)
+        for p in range(self.n_active_spat):
+            for q in range(self.n_active_spat):
+                for tau in range(2):
+                    for sigma in range(2):
+                        ferm_op = FermionOperator(f"{q*2+tau} {p*2+sigma}") 
+                        qubit_op = jordan_wigner(ferm_op)         
+                        op_mat = get_sparse_operator(qubit_op, n_qubits=self.n_active_spin)
+                        if self.use_projection:
+                            op_mat = op_mat @ self.proj_mat
+                        chi[p,q,tau,sigma] += op_mat @ self.wfn
+
+        for p in range(self.n_active_spat):
+            for q in range(self.n_active_spat):
+                for r in range(self.n_active_spat):
+                    for s in range(self.n_active_spat):
+                        for tau in range(2):
+                            for sigma in range(2):
+                                self.t_rdm[p][q][r][s] += np.vdot(chi[p,q,tau,sigma],chi[r,s,tau,sigma])
+
+        
+
 
 
 class Ansatz_tUPS(UPSAnsatz):

@@ -541,6 +541,10 @@ class Molecule:
 
 
         self.ca = C_mo
+        self.hf_embedding(
+            active=self.active,
+            frozen=self.frozen,
+        )
         
         
 

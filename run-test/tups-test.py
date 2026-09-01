@@ -21,6 +21,7 @@ def callback(param):
     print("Parameters:", param)
     print("Energy:", tups.energy)
 
+
 SCRIPT_DIR = Path(__file__).resolve().parent
 
 sv_protocol = StateVectorProtocol()
@@ -38,20 +39,27 @@ mol = load_molecule(
         )
 
 ref_bitstr = '110011001100'
-# perm = [0,4,2,3,1,5]
+ref_bitstr = '111111000000'
+perm = [0,4,2,3,1,5]
 perm = [0,5,1,4,2,3]
-perm = None
+# perm = None
 # perm = [0,3,1,4,2,5]
 # initial_guess = np.fromstring(array_text, sep=' ')
-for i in range(1):
-    tups = Ansatz_tUPS(mol=mol, layers=1, oo_layers=0, use_random_angles=False, use_mp2_guess=False, 
-                    use_projection=True, use_mat_mul=True, perfect_pair=True, ref_bitstring=ref_bitstr, mo_perm=perm
+tups = Ansatz_tUPS(mol=mol, layers=3, oo_layers=0, use_random_angles=False, use_mp2_guess=False, 
+                    use_projection=True, use_mat_mul=True, perfect_pair=False, 
+                    ref_bitstring=ref_bitstr, mo_perm=perm, use_small_pertub_angles=True
                     )
+for i in range(1000):
 
-    tups.run_vqe(protocol=sv_protocol, fast=True, callback=callback, method='L-BFGS-B', fast_mat_mul=True,)
-    # tups.get_spat_1rdm()
-    # tups.get_spat_2rdm()
+    tups.run_vqe(protocol=sv_protocol, fast=True, callback=callback, method='POWELL', fast_mat_mul=True,options={'ftol':1e-9})
+    # tups.run_oo(method="L-BFGS-B", callback=callback)
+    # converged = tups.orbital_optimisation_step()
+    
+
     # print(tups.t_rdm)
     print(tups.param_names)
     print(tups.energy)
+    # if converged is True:
+    #     break
+# np.savetxt("Cmo_converged", tups.mol.ca, delimiter=',', fmt='%.5f')
 # print(tups.final_circuit)

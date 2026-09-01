@@ -41,6 +41,7 @@ class UCCAnsatz:
     include_hf: bool = True
     use_mp2_guess: bool = True
     use_random_angles: bool = False
+    use_small_perturb_angles: bool = False
     initial_angles: np.ndarray | None = None
     param_excitations: dict = field(init=False)
     param_map: dict = field(init=False)
@@ -109,6 +110,8 @@ class UCCAnsatz:
                 self.initial_params = self._amplitudes2params()
             elif self.use_random_angles:
                 self.initial_params = {name: (rng.random()-0.5)*np.pi*2 for name in self.param_names}
+            elif self.use_small_perturb_angles:
+                self.initial_params = {name: (rng.random()-0.5)*np.pi*2*0.05 for name in self.param_names}
             elif self.initial_angles is not None:
                 self.initial_params = {name: self.initial_angles[idx] for idx, name in enumerate(self.param_names)}
             else:
@@ -337,9 +340,9 @@ class UCCAnsatz:
         vqe_energy, optimised_vector, extra = optimize(energy_fn, initial_vector, 
                                                        method=method, **optimizer_kwargs)
         # Convert the outut optimised vector back into parameter dictionary form
-        self.final_params = self._vector2params(optimised_vector)
+        self.initial_params = self._vector2params(optimised_vector)
         # Set the circuit parameters to optimised parameters and build final circuit
-        self._set_params(self.final_params)
+        self._set_params(self.initial_params)
         self.final_circuit = self.circuit.copy()
         self.vqe_energy = vqe_energy
         self.vqe_result = extra

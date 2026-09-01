@@ -41,7 +41,7 @@ ref_bitstr = '110011001100' # initial bit string to specify occupancy of orbital
 perm = [0,5,1,4,2,3] # permutation to rearrange orbitals when perfect_pair==True, optional
 # perm = [0,3,1,4,2,5]
 for i in range(1):
-    tups = Ansatz_tUPS(mol=mol, layers=2, oo_layers=0, use_random_angles=False, use_mp2_guess=False, 
+    tups = Ansatz_tUPS(mol=mol, layers=2, oo_layers=0, use_random_angles=False, use_small_perturb_angles=True, use_mp2_guess=False, 
                     use_projection=True, use_mat_mul=True, perfect_pair=True, ref_bitstring=ref_bitstr, mo_perm=perm
                     )
 

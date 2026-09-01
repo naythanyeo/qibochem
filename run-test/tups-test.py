@@ -47,7 +47,7 @@ perm = [0,5,1,4,2,3]
 # initial_guess = np.fromstring(array_text, sep=' ')
 tups = Ansatz_tUPS(mol=mol, layers=3, oo_layers=0, use_random_angles=False, use_mp2_guess=False, 
                     use_projection=True, use_mat_mul=True, perfect_pair=False, 
-                    ref_bitstring=ref_bitstr, mo_perm=perm, use_small_pertub_angles=True
+                    ref_bitstring=ref_bitstr, mo_perm=perm, use_small_perturb_angles=True
                     )
 for i in range(1000):
 

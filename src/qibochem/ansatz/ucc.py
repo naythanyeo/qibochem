@@ -41,7 +41,7 @@ class UCCAnsatz:
     include_hf: bool = True
     use_mp2_guess: bool = True
     use_random_angles: bool = False
-    use_small_pertub_angles: bool = False
+    use_small_perturb_angles: bool = False
     initial_angles: np.ndarray | None = None
     param_excitations: dict = field(init=False)
     param_map: dict = field(init=False)
@@ -110,7 +110,7 @@ class UCCAnsatz:
                 self.initial_params = self._amplitudes2params()
             elif self.use_random_angles:
                 self.initial_params = {name: (rng.random()-0.5)*np.pi*2 for name in self.param_names}
-            elif self.use_small_pertub_angles:
+            elif self.use_small_perturb_angles:
                 self.initial_params = {name: (rng.random()-0.5)*np.pi*2*0.05 for name in self.param_names}
             elif self.initial_angles is not None:
                 self.initial_params = {name: self.initial_angles[idx] for idx, name in enumerate(self.param_names)}

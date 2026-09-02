@@ -168,3 +168,6 @@ psi4_output.dat
 .vscode/
 
 .DS_Store
+# submodules
+src/wales/*
+!src/wales/.gitkeep

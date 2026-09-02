@@ -1,0 +1,29 @@
+! CPUS 4
+! CYCLES 100000
+! SLURM
+! RUNLOCAL
+! EVCUT 1.0D-10
+NOFRQS
+
+COPYFILES qc_ucc_hamiltonian.dat qc_ucc_index.dat qc_ucc_initial.dat qc_ucc.dat
+COPYFILES qc_ucc_order.dat
+EXEC $OPTIM_PATH
+SYSTEM         QC
+NATOMS         45
+SEED           1
+PERTURB        2.5
+DIRECTION      AB
+TEMPERATURE    0.1
+! DEBUG
+EDIFFTOL  1.0D-10
+GEOMDIFFTOL  1.0D-10
+ITOL           10.1D0
+
+QCUCC
+QCORDER
+QC1            12 45
+CHECKPATHINFO
+
+ADDMIN min.data.info.test
+! CONNECTREGION 1 2
+! EXTRACTMINFILE

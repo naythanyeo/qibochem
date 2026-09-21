@@ -1,3 +1,3 @@
 import importlib.metadata as im
 
-__version__ = im.version(__package__)
+__version__ = im.version("qibochem-qse")

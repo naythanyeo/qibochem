@@ -1,12 +1,11 @@
 [tool.poetry]
-name = "qibochem"
-version = "0.0.5"
-description = "Quantum chemistry module for quantum computing with Qibo"
-authors = ["The Qibo team"]
+name = "qibochem-qse"
+version = "0.0.1"
+description = "Research Fork for QSE built upon Qibochem"
+authors = ["The Qibo team", "Naythan Yeo"]
 license = "Apache License 2.0"
 readme = "README.md"
-repository = "https://github.com/qiboteam/qibochem/"
-documentation = "https://qibo.science/qibochem/stable"
+repository = "https://github.com/naythanyeo/qibochem/"
 keywords = []
 classifiers = [
   "Programming Language :: Python :: 3",
@@ -26,20 +25,6 @@ numpy = "^2.0.0"
 requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
-[tool.poetry.group.docs]
-optional = true
-
-[tool.poetry.group.docs.dependencies]
-sphinx = "^7.0.0"
-furo = "^2023.3.27"
-recommonmark = "^0.7.1"
-sphinxcontrib-bibtex = "^2.5.0"
-sphinxcontrib-katex = "^0.9.6"
-sphinx-markdown-tables = "^0.0.17"
-nbsphinx = "^0.9.1"
-ipython = "^8.34.0"
-sphinx-copybutton = "^0.5.2"
-
 [tool.poetry.group.tests]
 optional = true
 
@@ -53,9 +38,6 @@ pylint = "^3.3.5"
 test = "pytest"
 lint = "pylint src --errors-only"
 lint-warnings = "pylint src --exit-zero"
-docs = "make -C doc html"
-docs-clean = "make -C doc clean"
-test-docs = "make -C doc doctest"
 
 [tool.pylint.reports]
 output-format = "colorized"

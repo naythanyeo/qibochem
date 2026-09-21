@@ -190,7 +190,7 @@ class UPSAnsatz(UCCAnsatz):
         self.proj_mat = self.proj_mat.tocsc()
         self.proj_N = len(bitstrings)
 
-    def _ansatz_active_orbitals(self):
+    def _ansatz_active_order(self):
         if not self.perfect_pair:
             return self.mol.active
         return [self.mol.active[i] for i in self.mo_perm]
@@ -263,27 +263,30 @@ class UPSAnsatz(UCCAnsatz):
 
     def _active_fock_matrix(self):
         active_fock = np.zeros([self.n_spat,self.n_spat])
+        active = self._ansatz_active_order()
         for p in range(self.n_spat):
             for q in range(self.n_spat):
-                for v, V in enumerate(self.mol.active):
-                    for w, W in enumerate(self.mol.active):
+                for v, V in enumerate(active):
+                    for w, W in enumerate(active):
                         active_fock[p][q] += self.o_rdm[v][w] * (self.mol.tei[p][V][W][q] - 0.5 * self.mol.tei[p][V][q][W])
 
         return active_fock
 
 
     def _auxiliary_q_matrix(self):
+        active = self._ansatz_active_order()
         q_matrix = np.zeros([self.n_active_spat, self.n_spat])
         for v in range(self.n_active_spat):
             for m in range(self.n_spat):
-                for w, W in enumerate(self.mol.active):
-                    for x, X in enumerate(self.mol.active):
-                        for y, Y in enumerate(self.mol.active):
+                for w, W in enumerate(active):
+                    for x, X in enumerate(active):
+                        for y, Y in enumerate(active):
                             q_matrix[v][m] += self.t_rdm[v][w][x][y] * self.mol.tei[m][W][Y][X]
         return q_matrix
 
 
     def _generalised_fock_matrix(self):
+        active = self._ansatz_active_order()
         generalised_fock = np.zeros([self.n_spat, self.n_spat])
         inactive_fock = self.mol._inactive_fock_matrix(self.mol.frozen)
         active_fock = self._active_fock_matrix()
@@ -293,10 +296,10 @@ class UPSAnsatz(UCCAnsatz):
             for n in range(self.n_spat):
                 generalised_fock[I][n] = 2 * (inactive_fock[n][I] + active_fock[n][I])
 
-        for v, V in enumerate(self.mol.active):
+        for v, V in enumerate(active):
             for n in range(self.n_spat):
                 generalised_fock[V][n] = q_matrix[v][n]
-                for w, W in enumerate(self.mol.active):
+                for w, W in enumerate(active):
                     generalised_fock[V][n] += inactive_fock[n][W] * self.o_rdm[v][w]
         return generalised_fock
 
@@ -333,17 +336,17 @@ class UPSAnsatz(UCCAnsatz):
         # print(self.mol.ca)
         return False
 
-    def _pack_orbital_gradient(self, gradient):
+    def _pack_rotations(self, kappa):
         """Convert an antisymmetric orbital-gradient matrix to a 1D array."""
-        gradient = np.asarray(gradient)
+        kappa = np.asarray(kappa)
 
-        if gradient.ndim != 2 or gradient.shape[0] != gradient.shape[1]:
+        if kappa.ndim != 2 or kappa.shape[0] != kappa.shape[1]:
             raise ValueError("Orbital gradient must be a square 2D matrix.")
 
-        indices = np.triu_indices(gradient.shape[0], k=1)
-        return gradient[indices]
+        indices = np.triu_indices(kappa.shape[0], k=1)
+        return kappa[indices]
 
-    def _unpack_orbital_gradient(self, vector, n_orbitals):
+    def _unpack_rotations(self, vector, n_orbitals):
         """Convert independent upper-triangle values to an antisymmetric matrix."""
         vector = np.asarray(vector)
         indices = np.triu_indices(n_orbitals, k=1)
@@ -353,14 +356,14 @@ class UPSAnsatz(UCCAnsatz):
                 f"Expected {len(indices[0])} values, got {vector.size}."
             )
 
-        gradient = np.zeros(
+        kappa = np.zeros(
             (n_orbitals, n_orbitals),
             dtype=vector.dtype,
         )
-        gradient[indices] = vector
-        gradient[(indices[1], indices[0])] = -vector
+        kappa[indices] = vector
+        kappa[(indices[1], indices[0])] = -vector
 
-        return gradient
+        return kappa
 
     # def _orbital_gradient_vector(self, params, C0):
     #     kappa = self._
@@ -369,31 +372,39 @@ class UPSAnsatz(UCCAnsatz):
     #     g_vector = self._pack_orbital_gradient(g)
     #     return g_vector
 
-    def _orbital_objective(self, params, C0):
-        kappa = self._unpack_orbital_gradient(params, self.n_spat)
+    def _orbital_objective(self, params):
+        self.kappa_old = self.kappa
+        self.kappa = self._unpack_rotations(params, self.n_spat)
 
-        self.mol.ca = C0 @ expm(kappa)
+        self.mol.ca = self.mol.ca @ expm(self.kappa-self.kappa_old)
 
         self.mol.hf_embedding(
             active=self.mol.active,
             frozen=self.mol.frozen
         )
         self.energy = self._energy_from_rdms()
-        return self.energy
+        g_fock = self._generalised_fock_matrix()
+        gradient = self._pack_rotations(self.orbital_gradient(g_fock))
+        return self.energy, gradient
 
     def run_oo(self, method="L-BFGS-B", callback=None):
         self.get_spat_1rdm()
         self.get_spat_2rdm()
         initial_params = np.zeros(self.n_spat * (self.n_spat - 1) // 2)
-        C0 = self.mol.ca.copy()
-        energy, optimised_vector, extra = optimize(
+        # C0 = self.mol.ca.copy()
+        self.kappa = self._unpack_rotations(initial_params, self.n_spat)
+        energy, optimised_params, extra = optimize(
             self._orbital_objective,
             initial_params,
-            args=(C0,),
             method=method,
             callback=callback,
-            jac=None
+            jac=True
         )
+        self._orbital_objective(optimised_params)
+        self._initialise_hamiltonian()
+        self.energy = np.vdot(self.wfn, self.h_mat @ self.wfn).real
+        self.oo_result = extra
+        return self.energy, optimised_params
 
 
     def check_numerical_orb_gradient(self):

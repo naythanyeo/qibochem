@@ -11,13 +11,23 @@ OUTPUT_DIR = SCRIPT_DIR / "data" / "output"
 
 np.set_printoptions(precision=5, suppress=True)
 
-iteration=0
-def callback(param):
-    global iteration
+vqe_iteration=0
+oo_iteration=0
+def vqe_callback(param):
+    global vqe_iteration
     global tups
 
-    iteration += 1
-    print(f"Iteration {iteration}")
+    vqe_iteration += 1
+    print(f"VQE iteration {vqe_iteration}")
+    print("Parameters:", param)
+    print("Energy:", tups.energy)
+
+def oo_callback(param):
+    global oo_iteration
+    global tups
+
+    oo_iteration += 1
+    print(f"OO iteration {oo_iteration}")
     print("Parameters:", param)
     print("Energy:", tups.energy)
 
@@ -39,26 +49,33 @@ mol = load_molecule(
         )
 
 ref_bitstr = '110011001100'
-ref_bitstr = '111111000000'
+# ref_bitstr = '111111000000'
 perm = [0,4,2,3,1,5]
 perm = [0,5,1,4,2,3]
 # perm = None
 # perm = [0,3,1,4,2,5]
 # initial_guess = np.fromstring(array_text, sep=' ')
-tups = Ansatz_tUPS(mol=mol, layers=3, oo_layers=0, use_random_angles=False, use_mp2_guess=False, 
-                    use_projection=True, use_mat_mul=True, perfect_pair=False, 
-                    ref_bitstring=ref_bitstr, mo_perm=perm, use_small_perturb_angles=True
+tups = Ansatz_tUPS(mol=mol, layers=1, oo_layers=0, use_random_angles=False, use_mp2_guess=False, 
+                    use_projection=True, use_mat_mul=True, perfect_pair=True, 
+                    ref_bitstring=ref_bitstr, mo_perm=perm, use_small_perturb_angles=False
                     )
-for i in range(1000):
+prev_energy = None
+energy_tol = 1e-10
+for i in range(100):
 
-    tups.run_vqe(protocol=sv_protocol, fast=True, callback=callback, method='POWELL', fast_mat_mul=True,options={'ftol':1e-9})
-    # tups.run_oo(method="L-BFGS-B", callback=callback)
-    # converged = tups.orbital_optimisation_step()
+    tups.run_vqe(protocol=sv_protocol, fast=True, callback=vqe_callback, method='L-BFGS-B', fast_mat_mul=True,)
+    tups.run_oo(method="L-BFGS-B", callback=oo_callback)
     
+    energy = tups.energy
+    vqe_ok = tups.vqe_result.success
+    oo_ok = tups.oo_result.success
+    delta = (abs(energy - prev_energy) if prev_energy is not None else np.inf)
 
-    # print(tups.t_rdm)
-    print(tups.param_names)
-    print(tups.energy)
+    if vqe_ok and oo_ok and delta < energy_tol:
+        print("Alternating optimisation converged.")
+        break
+
+    prev_energy = energy
     # if converged is True:
     #     break
 # np.savetxt("Cmo_converged", tups.mol.ca, delimiter=',', fmt='%.5f')

@@ -168,3 +168,5 @@ psi4_output.dat
 .vscode/
 
 .DS_Store
+
+/src/wales/

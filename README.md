@@ -1,64 +1,56 @@
-# Qibochem
+# Qibochem-QSE
 
-![Tests](https://github.com/qiboteam/qibochem/workflows/Tests/badge.svg)
-[![codecov](https://codecov.io/gh/qiboteam/qibochem/graph/badge.svg?token=2CMDZP1GU2)](https://codecov.io/gh/qiboteam/qibochem)
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.10473173.svg)](https://doi.org/10.5281/zenodo.10473173)
+A research fork of [Qibochem](https://github.com/qiboteam/qibochem),
+developed to investigate quantum subspace expansion (QSE).
 
-Qibochem is a plugin to [Qibo](https://github.com/qiboteam/qibo) for quantum chemistry simulations.
+Qibochem is a plugin for [Qibo](https://github.com/qiboteam/qibo)
+for quantum chemistry simulations. The original implementation and
+documentation are available from the
+[upstream repository](https://github.com/qiboteam/qibochem) and
+[Qibochem documentation](https://qibo.science/qibochem/stable/).
 
-Some of the features of Qibochem are:
+## Research-fork features
+The fork inherits most features from qibochem. 
+Refer to their original documentation for details on the Molecule classes and Qibo backend.
+This fork mainly has the following new features:
 
-* General purpose `Molecule` class
-  * PySCF for calculating the molecular  1- and 2-electron integrals
-  * User defined orbital active space
-* Unitary Coupled Cluster Ansatz
-* Various Qibo backends (numpy, JIT, TN) for efficient simulation
+- **UCC ansatz framework:** parameter tying implemented between excitation
+  operators and their circuit rotations. More broad ansatz families implemented
+- **Fast VQE evaluation:** direct statevector Pauli rotations during
+  optimisation, with the optimised Qibo circuit returned afterwards.
+- **QSE computables:** construct projected Hamiltonian, overlap, and
+  spin matrices using configurable excitation generators.
+- **Measurement protocols:** statevector expectations and finite-shot
+  sampling with global qubit-wise commuting grouping across projected
+  observables. This fork uses bitmasks observables as opposed to SymPy from the original implementation. 
 
-## Documentation
+## Installation
 
-The Qibochem documentation can be found [here](https://qibo.science/qibochem/stable)
+Requires Python 3.11–3.13. Install the research branch directly from GitHub:
 
-## Minimum working example:
-
-An example of building the UCCD ansatz with a H2 molecule
-
-```
-import numpy as np
-from qibo.models import VQE
-
-from qibochem.driver import Molecule
-from qibochem.ansatz import hf_circuit, ucc_circuit
-
-# Define the H2 molecule and obtain its 1-/2- electron integrals with PySCF
-h2 = Molecule([('H', (0.0, 0.0, 0.0)), ('H', (0.0, 0.0, 0.7))])
-h2.run_pyscf()
-# Generate the molecular Hamiltonian
-hamiltonian = h2.hamiltonian()
-
-# Build a UCC circuit ansatz for running VQE
-circuit = hf_circuit(h2.nso, h2.nelec)
-circuit += ucc_circuit(h2.nso, [0, 1, 2, 3])
-
-# Create and run the VQE, starting with random initial parameters
-vqe = VQE(circuit, hamiltonian)
-
-initial_parameters = np.random.uniform(0.0, 2*np.pi, 8)
-best, params, extra = vqe.minimize(initial_parameters)
-print(f"VQE result: {best:.10f}")
+```bash
+python -m pip install "git+https://github.com/naythanyeo/qibochem-qse.git@main-qse"
 ```
 
-## Citation policy
+The distribution is named `qibochem-qse`, but the Python import remains:
 
-If you use the Qibochem plugin please refer to the documentation for citation instructions.
+```python
+import qibochem
+```
 
-## Contact
+## Tutorials
 
-To get in touch with the community and the developers, consider joining the Qibo workspace on Matrix:
+The following notebooks provide minimal working examples:
 
-[![Matrix](https://img.shields.io/matrix/qibo%3Amatrix.org?logo=matrix)](https://matrix.to/#/#qibo:matrix.org)
+- [Statevector QSE](tutorials/qse_full_run.ipynb):
+  prepare a UCCSD reference, solve the QSE problem, and evaluate spin
+  expectations.
+- [Finite-shot QSE](tutorials/qse_shot_noise.ipynb):
+  sample projected matrices and compare energy errors across repeats
+  and shot counts.
 
-If you have a question about the project, contact us at [📫](mailto:qiboteam@qibo.science).
+## Citation
 
-## Contributing
-
-Contributions, issues and feature requests are welcome.
+Please follow the citation instructions in the
+[original Qibochem documentation](https://qibo.science/qibochem/stable/)
+and cite the relevant upstream work when using this fork.

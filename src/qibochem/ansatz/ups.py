@@ -11,6 +11,8 @@ from scipy.sparse.linalg import expm_multiply
 from scipy.linalg import expm
 from scipy.sparse import csc_matrix, lil_matrix
 import itertools
+import json
+from datetime import datetime, timezone
 
 '''
 New class for general UPS and tUPS. 
@@ -356,10 +358,7 @@ class UPSAnsatz(UCCAnsatz):
                 f"Expected {len(indices[0])} values, got {vector.size}."
             )
 
-        kappa = np.zeros(
-            (n_orbitals, n_orbitals),
-            dtype=vector.dtype,
-        )
+        kappa = np.zeros((n_orbitals, n_orbitals),dtype=vector.dtype)
         kappa[indices] = vector
         kappa[(indices[1], indices[0])] = -vector
 
@@ -446,6 +445,90 @@ class UPSAnsatz(UCCAnsatz):
         numerical_grad = (E_plus - E_minus) / (2 * eps)
         print(numerical_grad)
         self.mol.ca = C0
+
+    def run_oo_vqe_alternating(self, e_tol=1e-8, loops=100, vqe_callback=None, oo_callback=None, options=None):
+        '''Function to run alternating vqe and oo loops'''
+        prev_energy = None
+        self.total_vqe_iterations = 0
+        self.total_vqe_evaluations = 0
+        self.total_oo_iterations = 0
+        self.total_oo_evaluations = 0
+        self.completed_loops = 0
+        for i in range(loops):
+            self.run_vqe(protocol=StateVectorProtocol(), fast=True, callback=vqe_callback, method='L-BFGS-B', fast_mat_mul=True, options=options)
+            self.run_oo(method="L-BFGS-B", callback=oo_callback)
+        
+            energy = self.energy
+            vqe_ok = self.vqe_result.success
+            oo_ok = self.oo_result.success
+            delta = (abs(energy - prev_energy) if prev_energy is not None else np.inf)
+
+            self.total_vqe_iterations += int(self.vqe_result.nit)
+            self.total_vqe_evaluations += int(self.vqe_result.nfev)
+            self.total_oo_iterations += int(self.oo_result.nit)
+            self.total_oo_evaluations += int(self.oo_result.nfev)
+            self.completed_loops += 1
+
+            if (vqe_ok and oo_ok and delta < e_tol) or (self.oo_result.success and self.oo_result.nit == 0):
+                # print("Alternating optimisation converged.")
+                break
+
+            prev_energy = energy
+
+        self.run_summary = {
+            "energy": float(self.energy),
+            "layers": self.layers,
+            "oo-layers": self.oo_layers,
+            "initial_params": self.initial_params,
+            "final_params": self.params,
+            "vqe_iterations": self.total_vqe_iterations,
+            "vqe_energy_evaluations": self.total_vqe_evaluations,
+            "oo_iterations": self.total_oo_iterations,
+            "oo_energy_evaluations": self.total_oo_evaluations,
+            "oo_vqe_loops": self.completed_loops,
+            "vqe_method": "L-BFGS-B",
+            "oo_method": "L-BFGS-B",
+            "gtol": options['gtol'],
+            "method": "classical_oo-vqe_alt",
+            "mo_coefficients": self.mol.ca.tolist(),
+        }
+
+
+    def run_oo_vqe_quantum(self, vqe_callback=None, options=None):
+        '''Function to wrap run_vqe for run_summary'''
+        self.total_vqe_iterations = 0
+        self.total_vqe_evaluations = 0
+        self.run_vqe(protocol=StateVectorProtocol(), fast=True, callback=vqe_callback, method='L-BFGS-B', fast_mat_mul=True, options=options)
+
+        self.total_vqe_iterations += int(self.vqe_result.nit)
+        self.total_vqe_evaluations += int(self.vqe_result.nfev)
+
+
+        self.run_summary = {
+            "energy": float(self.energy),
+            "layers": self.layers,
+            "oo-layers": self.oo_layers,
+            "initial_params": self.initial_params,
+            "final_params": self.params,
+            "vqe_iterations": self.total_vqe_iterations,
+            "vqe_energy_evaluations": self.total_vqe_evaluations,
+            "vqe_method": "L-BFGS-B",
+            "gtol": options['gtol'],
+            "method": "quantum_oo-vqe"
+        }
+        
+
+        
+    def export_summary(self, molecule, basis, active_o, active_e, output_path):
+        record = {
+            "molecule": molecule,
+            "basis": basis,
+            "active_electrons": active_e,
+            "active_orbitals": active_o,
+            **self.run_summary,
+        }
+        with output_path.open("a") as f:
+            f.write(json.dumps(record, allow_nan=False) + "\n")
 
         
 

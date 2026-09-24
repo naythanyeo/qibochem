@@ -47,6 +47,7 @@ class UCCAnsatz:
     param_map: dict = field(init=False)
     fast_rotations: list = field(init=False)
     use_mat_mul: bool = False
+    random_oo_angles = False
 
     """
     DEFINE: 
@@ -108,14 +109,17 @@ class UCCAnsatz:
                     self.mol,
                 )
                 self.initial_params = self._amplitudes2params()
+            elif self.use_random_angles and not self.random_oo_angles:
+                self.initial_params = {name: (rng.random()-0.5)*np.pi*2 if 'oo' not in name else 0.0 for name in self.param_names }
             elif self.use_random_angles:
-                self.initial_params = {name: (rng.random()-0.5)*np.pi*2 for name in self.param_names}
+                self.initial_params = {name: (rng.random()-0.5)*np.pi*2 for name in self.param_names }
             elif self.use_small_perturb_angles:
                 self.initial_params = {name: (rng.random()-0.5)*np.pi*2*0.05 for name in self.param_names}
             elif self.initial_angles is not None:
                 self.initial_params = {name: self.initial_angles[idx] for idx, name in enumerate(self.param_names)}
             else:
                 self.initial_params = {name: 0.0 for name in self.param_names}
+            self.params = self.initial_params
             self.circuit = self._build_circuit(self.initial_params)
 
 
@@ -318,7 +322,7 @@ class UCCAnsatz:
         # Get the bitmask hamiltonian from qubit hamiltonian to run VQE
         self.hamiltonian = qubit_operator2observable(self.mol.hamiltonian("qubit", ferm_qubit_map=self.ferm_qubit_map))
         # Convert the initial parameters (dictionary) into a vector form for the optimizer
-        initial_vector = np.array([self.initial_params[name] for name in self.param_names])
+        initial_vector = np.array([self.params[name] for name in self.param_names])
         # The vector that optimize uses is length equal to number of ANSATZ parameters 
         # The variable circuit_params contains the FULL CIRCUIT parameters 
         self.protocol = protocol # Set self attribute protocol for get_energy to run
@@ -333,21 +337,19 @@ class UCCAnsatz:
             energy_fn = self._get_fast_energy
         else:
             energy_fn = self._get_energy
-                
-        # print(self.initial_params)
-        # print(self._get_fast_energy(self.initial_params))
+            
         
         vqe_energy, optimised_vector, extra = optimize(energy_fn, initial_vector, 
                                                        method=method, **optimizer_kwargs)
         # Convert the outut optimised vector back into parameter dictionary form
-        self.initial_params = self._vector2params(optimised_vector)
+        self.params = self._vector2params(optimised_vector)
         # Set the circuit parameters to optimised parameters and build final circuit
-        self._set_params(self.initial_params)
+        self._set_params(self.params)
         self.final_circuit = self.circuit.copy()
         self.vqe_energy = vqe_energy
         self.vqe_result = extra
 
-        return vqe_energy, self.final_params, self.final_circuit
+        return vqe_energy, self.params, self.final_circuit
     
 """
 ALL UCC ANSATZ SUBCLASSES

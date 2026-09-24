@@ -48,6 +48,10 @@ mol = load_molecule(
             orbitals='canonical'
         )
 
+# Cmo = np.loadtxt(SCRIPT_DIR / "Cmo_guess", delimiter=",")
+# mol.ca = Cmo
+# mol.hf_embedding(active=mol.active, frozen=mol.frozen)
+
 ref_bitstr = '110011001100'
 # ref_bitstr = '111111000000'
 perm = [0,4,2,3,1,5]
@@ -57,26 +61,11 @@ perm = [0,5,1,4,2,3]
 # initial_guess = np.fromstring(array_text, sep=' ')
 tups = Ansatz_tUPS(mol=mol, layers=1, oo_layers=0, use_random_angles=False, use_mp2_guess=False, 
                     use_projection=True, use_mat_mul=True, perfect_pair=True, 
-                    ref_bitstring=ref_bitstr, mo_perm=perm, use_small_perturb_angles=False
+                    ref_bitstring=ref_bitstr, mo_perm=perm, use_small_perturb_angles=True
                     )
-prev_energy = None
-energy_tol = 1e-10
-for i in range(100):
+tups.run_oo_vqe_alternating(vqe_callback=vqe_callback, oo_callback=oo_callback, options={'gtol': 1e-6})
 
-    tups.run_vqe(protocol=sv_protocol, fast=True, callback=vqe_callback, method='L-BFGS-B', fast_mat_mul=True,)
-    tups.run_oo(method="L-BFGS-B", callback=oo_callback)
-    
-    energy = tups.energy
-    vqe_ok = tups.vqe_result.success
-    oo_ok = tups.oo_result.success
-    delta = (abs(energy - prev_energy) if prev_energy is not None else np.inf)
-
-    if vqe_ok and oo_ok and delta < energy_tol:
-        print("Alternating optimisation converged.")
-        break
-
-    prev_energy = energy
     # if converged is True:
     #     break
-# np.savetxt("Cmo_converged", tups.mol.ca, delimiter=',', fmt='%.5f')
+    # np.savetxt("Cmo_converged", tups.mol.ca, delimiter=',', fmt='%.5f')
 # print(tups.final_circuit)
